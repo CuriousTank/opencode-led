@@ -1,89 +1,104 @@
 # opencode-traffic-light
 
-一个悬浮、置顶的「红绿灯」监控器，实时反映 [opencode](https://opencode.ai) 的任务状态。
+[English](./README.md) | [简体中文](./README.zh-CN.md)
 
-- 🔴 红：opencode 正在执行任务（`session.status = busy`）
-- 🟡 黄：opencode 等待你回复/介入（权限请求挂起 `permission.updated`）
-- 🟢 绿：opencode 已完成任务（`session.status = idle`）
+A floating, always-on-top traffic light widget that reflects the real-time task status of [opencode](https://opencode.ai).
 
-## 架构
+- 🔴 Red: opencode is executing a task (`session.status = busy`)
+- 🟡 Yellow: opencode is waiting for your input/permission (`permission.updated` pending)
+- 🟢 Green: opencode has finished the task (`session.status = idle`)
+
+## Architecture
 
 ```
-opencode 进程                    Rust 监控器进程
-┌─────────────────────┐         ┌──────────────────────────┐
-│ 插件 status-pusher  │  HTTP   │ tiny_http (127.0.0.1:9912)│
-│  ├ event:status     │ ──POST→ │  ├ 状态机 store          │
-│  └ event:permission │         │  └ eframe 悬浮置顶窗口    │
-└─────────────────────┘         │     红黄绿 PNG 灯泡       │
-                                └──────────────────────────┘
+opencode process                   Rust monitor process
+┌─────────────────────┐            ┌──────────────────────────┐
+│ plugin status-pusher│   HTTP     │ tiny_http (127.0.0.1:9912)│
+│  ├ event:status     │ ──POST───→ │  ├ state machine store   │
+│  └ event:permission │            │  └ eframe floating window │
+└─────────────────────┘            │     red/yellow/green PNG  │
+                                   └──────────────────────────┘
 ```
 
-- 插件（TS，~70 行）放进 opencode 的 `.opencode/plugin/` 自动加载，捕获 `session.status` / `permission.updated` 事件后 POST 推给监控器。
-- 监控器（Rust，egui/eframe 渲染）监听本地端口，渲染无边框、透明、置顶、可拖拽的窗口，支持同时显示多个 session 的灯泡。
+- The plugin (TypeScript, ~70 lines) is auto-loaded from opencode's `.opencode/plugin/` directory. It captures `session.status` / `permission.updated` events and POSTs them to the monitor.
+- The monitor (Rust, egui/eframe rendering) listens on a local port and renders a borderless, transparent, always-on-top, draggable window — supporting multiple session bulbs simultaneously.
 
-## 安装
+## Installation
 
-### 1. 编译监控器（需要 Rust）
+### Option A: Install via .deb package (recommended)
+
+Download the latest `.deb` from [GitHub Releases](https://github.com/CuriousTank/opencode-led/releases):
+
+```bash
+sudo dpkg -i opencode-traffic-light_0.1.0_amd64.deb
+sudo apt-get install -f   # auto-resolve missing dependencies
+```
+
+### Option B: Build from source (requires Rust)
 
 ```bash
 cd opencode-traffic-light
 cargo build --release
-# 产物：target/release/opencode-traffic-light
+# Binary: target/release/opencode-traffic-light
 ```
 
-Linux 编译依赖（运行/编译时）：系统的 OpenGL 运行库（大多数发行版自带）。无需 gtk/webkit。
+Build/runtime dependency: system OpenGL library (included in most distros). No gtk/webkit required.
 
-### 2. 安装 opencode 插件
+### Install the opencode plugin
 
-把 `plugin/status-pusher.ts` 放到任一位置，opencode 会自动发现加载：
+Copy `plugin/status-pusher.ts` to either location — opencode auto-discovers it:
 
-- **项目级**：`<project>/.opencode/plugin/status-pusher.ts`
-- **全局级**：`~/.config/opencode/plugin/status-pusher.ts`
+- **Project-level**: `<project>/.opencode/plugin/status-pusher.ts`
+- **Global**: `~/.config/opencode/plugin/status-pusher.ts`
 
-> 插件需要 opencode 已安装 `@opencode-ai/plugin` 包（`opencode plugin` 机制默认提供）。
+> The plugin requires `@opencode-ai/plugin` (bundled with opencode by default).
 
-## 使用
+If installed via `.deb`, the plugin is available at `/usr/share/opencode-traffic-light/plugin/status-pusher.ts`.
+
+## Usage
 
 ```bash
-# 1. 启动监控器
-./target/release/opencode-traffic-light
+# 1. Launch the monitor
+opencode-traffic-light          # if installed via .deb
+# or
+./target/release/opencode-traffic-light  # if built from source
 
-# 2. 正常使用 opencode（在已放插件的项目里）
+# 2. Use opencode normally (in a project with the plugin)
 opencode
 ```
 
-启动后会弹出一个红绿灯窗口，拖动可移动位置，右键退出。
+A traffic light window will appear. Drag to move, right-click to quit.
 
-## 配置
+## Configuration
 
-监控器端口默认 `9912`，用环境变量覆盖：
+The default port is `9912`. Override via environment variable:
 
 ```bash
-OPENCODE_TL_PORT=8899 ./opencode-traffic-light
+OPENCODE_TL_PORT=8899 opencode-traffic-light
 ```
 
-插件读取同一环境变量（`OPENCODE_TL_PORT`）决定推送到哪个端口。
+The plugin reads the same `OPENCODE_TL_PORT` variable to determine which port to push to.
 
-## 自定义图标
+## Custom Icons
 
-编辑 `tools/gen_icons.py` 顶部的颜色 RGB，然后：
+Edit the RGB values at the top of `tools/gen_icons.py`, then:
 
 ```bash
-python3 tools/gen_icons.py   # 重新生成 assets/*.png
+python3 tools/gen_icons.py   # regenerate assets/*.png
 cargo build --release
 ```
 
-## 协议
+## Protocol
 
 ```jsonc
-// 监控器监听 127.0.0.1:9912
-// 插件 → 监控器
+// Monitor listens on 127.0.0.1:9912
+// Plugin → Monitor
 POST /status   { "session_id": "ses_xxx", "project": "/path", "state": "running|done|input" }
 POST /remove   { "session_id": "ses_xxx" }
 GET  /health   -> "ok"
 ```
 
-`state` 取值：`running`（红）/`input`（黄）/`done`（绿）。
+`state` values: `running` (red) / `input` (yellow) / `done` (green).
 
 ## License
 

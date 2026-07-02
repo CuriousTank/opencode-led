@@ -1,2 +1,4 @@
 /target
 Cargo.lock
+*.deb
+debian/usr/

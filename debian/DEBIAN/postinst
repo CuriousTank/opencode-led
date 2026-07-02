@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+
+echo "opencode-traffic-light installed successfully."
+echo ""
+echo "Quick start:"
+echo "  1. Launch the monitor:  opencode-traffic-light"
+echo "  2. Copy plugin to opencode plugin dir:"
+echo "       mkdir -p ~/.config/opencode/plugin"
+echo "       cp /usr/share/opencode-traffic-light/plugin/status-pusher.ts ~/.config/opencode/plugin/"
+echo "  3. (Optional) Set custom port:"
+echo "       OPENCODE_TL_PORT=8899 opencode-traffic-light"
+echo ""
+
+exit 0

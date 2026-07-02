@@ -1,0 +1,11 @@
+Package: opencode-traffic-light
+Version: 0.1.0
+Architecture: amd64
+Maintainer: CuriousTank
+Depends: libx11-6, libxcb1, libxi6, libxext6
+Section: utils
+Priority: optional
+Description: Floating always-on-top traffic light monitor for opencode task status
+ A small Rust/egui desktop widget that shows red/yellow/green bulbs
+ reflecting the real-time status of opencode sessions (running/input/done).
+ Includes the opencode status-pusher plugin.
