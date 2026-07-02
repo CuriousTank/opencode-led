@@ -81,6 +81,84 @@ pub fn move_window(h: XHandles, x: i32, y: i32) {
     }
 }
 
+/// 设置窗口的 _NET_WM_STATE_ABOVE，确保始终置顶。
+/// 通过向 root 窗口发送 ClientMessage 实现（EWMH 规范）。
+pub fn set_above(h: XHandles) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let display = h.display as *mut std::ffi::c_void;
+        let root = XDefaultRootWindow(display);
+
+        // 原子：_NET_WM_STATE / _NET_WM_STATE_ABOVE
+        let atom_state = XInternAtom(display, b"_NET_WM_STATE\0".as_ptr() as *const i8, 0);
+        let atom_above = XInternAtom(display, b"_NET_WM_STATE_ABOVE\0".as_ptr() as *const i8, 0);
+
+        // 构造 XClientMessageEvent
+        let mut event = XClientMessageEvent {
+            type_: 33, // ClientMessage
+            serial: 0,
+            send_event: 1,
+            display,
+            window: h.window,
+            message_type: atom_state,
+            format: 32,
+            data: ClientMessageData {
+                l: [_NET_WM_STATE_ADD, atom_above as i64, 0, 1, 0],
+            },
+        };
+
+        XSendEvent(
+            display,
+            root,
+            0,
+            (SubstructureRedirectMask | SubstructureNotifyMask) as i64,
+            &mut event as *mut _ as *mut XEvent,
+        );
+        XFlush(display);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = h;
+    }
+}
+
+#[cfg(target_os = "linux")]
+const _NET_WM_STATE_ADD: i64 = 1;
+#[cfg(target_os = "linux")]
+const SubstructureRedirectMask: i64 = 1 << 20;
+#[cfg(target_os = "linux")]
+const SubstructureNotifyMask: i64 = 1 << 19;
+
+/// XClientMessageEvent 的 data 联合体（取 long[5] 分支）
+#[cfg(target_os = "linux")]
+#[repr(C)]
+union ClientMessageData {
+    pub b: [std::ffi::c_char; 20],
+    pub s: [std::ffi::c_short; 10],
+    pub l: [std::ffi::c_long; 5],
+}
+
+/// 对应 XClientMessageEvent
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct XClientMessageEvent {
+    type_: std::ffi::c_int,
+    serial: u64,
+    send_event: std::ffi::c_int,
+    display: *mut std::ffi::c_void,
+    window: u64,
+    message_type: u64,
+    format: std::ffi::c_int,
+    data: ClientMessageData,
+}
+
+/// XEvent 足够大的联合体（XClientMessageEvent 是其中最大的之一）
+#[cfg(target_os = "linux")]
+#[repr(C)]
+union XEvent {
+    pad: [std::ffi::c_long; 24],
+}
+
 #[cfg(target_os = "linux")]
 #[link(name = "X11")]
 unsafe extern "C" {
@@ -102,4 +180,17 @@ unsafe extern "C" {
         y: std::ffi::c_int,
     ) -> std::ffi::c_int;
     fn XFlush(display: *mut std::ffi::c_void) -> std::ffi::c_int;
+    fn XDefaultRootWindow(display: *mut std::ffi::c_void) -> u64;
+    fn XInternAtom(
+        display: *mut std::ffi::c_void,
+        atom_name: *const std::ffi::c_char,
+        only_if_exists: std::ffi::c_int,
+    ) -> u64;
+    fn XSendEvent(
+        display: *mut std::ffi::c_void,
+        window: u64,
+        propagate: std::ffi::c_int,
+        event_mask: i64,
+        event_send: *mut XEvent,
+    ) -> std::ffi::c_int;
 }

@@ -72,6 +72,7 @@ fn main() -> eframe::Result<()> {
                 icons,
                 dirty,
                 last_count: 0,
+                last_above_time: 0.0,
                 drag: None,
             }))
         }),
@@ -83,7 +84,7 @@ struct App {
     icons: Arc<Icons>,
     dirty: Arc<Mutex<bool>>,
     last_count: usize,
-    /// 手动拖拽状态
+    last_above_time: f64,
     drag: Option<DragState>,
 }
 
@@ -152,6 +153,16 @@ impl eframe::App for App {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
             }
+        }
+
+        // 定期重申 _NET_WM_STATE_ABOVE，防止被其他窗口遮挡
+        // 每秒一次，开销极小
+        let now = ui.ctx().input(|i| i.time);
+        if now - self.last_above_time > 1.0 {
+            if let Some(h) = platform::extract_handles(frame) {
+                platform::set_above(h);
+            }
+            self.last_above_time = now;
         }
 
         // 拖拽中：每帧用鼠标根坐标 - 偏移 = 窗口目标位置
