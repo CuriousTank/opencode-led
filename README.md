@@ -8,6 +8,16 @@ A floating, always-on-top traffic light widget that reflects the real-time task 
 - 🟡 Yellow: opencode is waiting for your input/permission (`permission.updated` pending)
 - 🟢 Green: opencode has finished the task (`session.status = idle`)
 
+## Demo
+
+### 🔴 Thinking (Red)
+
+![](assets/choice_2x.gif)
+
+### 🟡 Asking for input (Yellow)
+
+![](assets/ask_2x.gif)
+
 ## Architecture
 
 ```

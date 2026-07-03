@@ -8,6 +8,16 @@
 - 🟡 黄：opencode 等待你回复/介入（权限请求挂起 `permission.updated`）
 - 🟢 绿：opencode 已完成任务（`session.status = idle`）
 
+## 演示
+
+### 🔴 正在思考（红灯）
+
+![](assets/choice_2x.gif)
+
+### 🟡 询问状态（黄灯）
+
+![](assets/ask_2x.gif)
+
 ## 架构
 
 ```
