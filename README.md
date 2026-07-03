@@ -14,11 +14,11 @@ A floating, always-on-top traffic light widget that reflects the real-time task 
 
 ### 🔴 Thinking (Red)
 
-![](assets/choice_2x.gif)
+![](assets/ask_2x.gif)
 
 ### 🟡 Asking for input (Yellow)
 
-![](assets/ask_2x.gif)
+![](assets/choice_2x.gif)
 
 ## Architecture
 

@@ -14,11 +14,11 @@
 
 ### 🔴 正在思考（红灯）
 
-![](assets/choice_2x.gif)
+![](assets/ask_2x.gif)
 
 ### 🟡 询问状态（黄灯）
 
-![](assets/ask_2x.gif)
+![](assets/choice_2x.gif)
 
 ## 架构
 
