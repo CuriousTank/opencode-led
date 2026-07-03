@@ -72,24 +72,25 @@ export default (async (input) => {
   // 注意：不 await，避免阻塞插件加载导致 opencode 崩溃
   void (async () => {
     try {
-      const [listRes, statusRes] = await Promise.all([
-        client.session.list(),
-        client.session.status(),
-      ]);
+      const listRes = await client.session.list();
       const sessions = (listRes as any).data ?? [];
-      const statuses = (statusRes as any).data ?? {};
-      const sessionMap = new Map<string, any>();
+      // session.list() 返回当前 opencode 进程管理的所有 session
+      // 全部推送，状态默认 done（绿灯）
       for (const s of sessions) {
-        sessionMap.set(s.id, s);
+        knownSessions.add(s.id);
+        if (s.title) sessionTitles.set(s.id, s.title);
+        await push(s.id, "done", s.directory);
       }
-      for (const [sid, st] of Object.entries(statuses)) {
-        knownSessions.add(sid);
-        const s = sessionMap.get(sid);
-        if (s?.title) sessionTitles.set(sid, s.title);
-        const state: "running" | "done" | "input" =
-          (st as any)?.type === "busy" || (st as any)?.type === "retry" ? "running" : "done";
-        await push(sid, state, s?.directory);
-      }
+      // 再查 status 更新 busy/retry 的
+      try {
+        const statusRes = await client.session.status();
+        const statuses = (statusRes as any).data ?? {};
+        for (const [sid, st] of Object.entries(statuses)) {
+          if ((st as any)?.type === "busy" || (st as any)?.type === "retry") {
+            await push(sid, "running");
+          }
+        }
+      } catch {}
     } catch {
       // client 调用失败不影响后续事件监听
     }

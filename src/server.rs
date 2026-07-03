@@ -60,6 +60,21 @@ fn handle(
             let _ = req.respond(resp);
             return;
         }
+        ("GET", "/debug") => {
+            let snap = store.snapshot();
+            let entries: Vec<serde_json::Value> = snap.iter().map(|e| {
+                serde_json::json!({
+                    "session_id": e.session_id,
+                    "state": format!("{:?}", e.state),
+                    "project": e.project,
+                    "title": e.title,
+                    "last_seen_secs_ago": e.last_seen.elapsed().as_secs(),
+                })
+            }).collect();
+            let body = serde_json::to_string_pretty(&entries).unwrap_or_default();
+            let _ = req.respond(tiny_http::Response::from_string(body));
+            return;
+        }
         _ => {
             let _ = req.respond(tiny_http::Response::empty(404));
             return;
