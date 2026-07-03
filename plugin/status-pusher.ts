@@ -35,7 +35,9 @@ function extractSessionID(properties: any): string | undefined {
   return properties.sessionID ?? properties.sessionId ?? properties.info?.id ?? properties.info?.sessionID;
 }
 
-export default (async () => {
+export default (async (input) => {
+  const { client } = input;
+
   // 记录每个 session 当前是否有挂起的权限请求/提问
   const pendingInput = new Map<string, number>();
   // 记录所有活跃的 sessionID（用于心跳）
@@ -66,9 +68,36 @@ export default (async () => {
     await push(sessionID, state, project);
   }
 
+  // === 启动时主动报到：把当前已有的活跃 session 推送给监控器 ===
+  // 这样监控器晚启动时也能立刻看到已存在的会话（绿灯/红灯）
+  try {
+    const [listRes, statusRes] = await Promise.all([
+      client.session.list(),
+      client.session.status(),
+    ]);
+    const sessions = (listRes as any).data ?? [];
+    const statuses = (statusRes as any).data ?? {};
+    // 构建 id -> session 的查找表，用于补充 title / directory
+    const sessionMap = new Map<string, any>();
+    for (const s of sessions) {
+      sessionMap.set(s.id, s);
+    }
+    // 只推送 statuses 中出现的 session（活跃的），避免历史 session 闪现
+    for (const [sid, st] of Object.entries(statuses)) {
+      knownSessions.add(sid);
+      const s = sessionMap.get(sid);
+      if (s?.title) sessionTitles.set(sid, s.title);
+      const state: "running" | "done" | "input" =
+        (st as any)?.type === "busy" || (st as any)?.type === "retry" ? "running" : "done";
+      await push(sid, state, s?.directory);
+    }
+  } catch {
+    // client 调用失败不影响后续事件监听
+  }
+
   // 每 5 秒发送一次心跳，让监控器知道本 opencode 进程还活着。
   // 进程退出后 setInterval 自然停止，监控器在 ~12 秒后自动清理对应灯泡。
-  setInterval(() => {
+  const heartbeatTimer = setInterval(() => {
     for (const sid of knownSessions) {
       heartbeat(sid);
     }
@@ -162,6 +191,9 @@ export default (async () => {
         } catch {}
         return;
       }
+    },
+    dispose: async () => {
+      clearInterval(heartbeatTimer);
     },
   };
 }) satisfies Plugin;
