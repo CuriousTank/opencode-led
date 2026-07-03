@@ -3,6 +3,7 @@ use eframe::egui;
 use include_dir::{include_dir, Dir};
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 mod icons;
 mod platform;
@@ -18,6 +19,8 @@ const DEFAULT_PORT: u16 = 9912;
 const ICON_PX: f32 = 64.0;
 const GAP_PX: f32 = 6.0;
 const PAD_PX: f32 = 2.0; // 最小透明边距，让窗口几乎贴合灯泡，减少对其他窗口的阻挡
+const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
+const SESSION_TIMEOUT: Duration = Duration::from_secs(12);
 
 fn main() -> eframe::Result<()> {
     let port = std::env::var("OPENCODE_TL_PORT")
@@ -73,6 +76,7 @@ fn main() -> eframe::Result<()> {
                 dirty,
                 last_count: 0,
                 last_above_time: 0.0,
+                last_sweep: Instant::now(),
                 drag: None,
             }))
         }),
@@ -85,6 +89,7 @@ struct App {
     dirty: Arc<Mutex<bool>>,
     last_count: usize,
     last_above_time: f64,
+    last_sweep: Instant,
     drag: Option<DragState>,
 }
 
@@ -100,6 +105,14 @@ impl eframe::App for App {
 
         // 消费 dirty 标志（这里只是触发重绘，快照在下面直接读）
         let _ = self.dirty.lock();
+
+        // 定期清理过期的 session（心跳超时 = opencode 进程已退出）
+        if self.last_sweep.elapsed() >= SWEEP_INTERVAL {
+            self.last_sweep = Instant::now();
+            if self.store.sweep(SESSION_TIMEOUT) {
+                *self.dirty.lock() = true;
+            }
+        }
 
         let snap = self.store.snapshot();
         let count = snap.len().max(1);

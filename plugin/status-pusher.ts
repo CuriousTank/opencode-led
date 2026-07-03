@@ -31,6 +31,16 @@ async function push(sessionID: string, state: "running" | "done" | "input", proj
   }
 }
 
+async function heartbeat(sessionID: string): Promise<void> {
+  try {
+    await fetch(`${monitorUrl()}/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: sessionID }),
+    });
+  } catch {}
+}
+
 /** 从事件 properties 中尽量提取 sessionID（兼容多种事件结构） */
 function extractSessionID(properties: any): string | undefined {
   if (!properties) return undefined;
@@ -40,6 +50,16 @@ function extractSessionID(properties: any): string | undefined {
 export default (async () => {
   // 记录每个 session 当前是否有挂起的权限请求/提问
   const pendingInput = new Map<string, number>();
+  // 记录所有活跃的 sessionID（用于心跳）
+  const knownSessions = new Set<string>();
+
+  // 每 5 秒发送一次心跳，让监控器知道本 opencode 进程还活着。
+  // 进程退出后 setInterval 自然停止，监控器在 ~12 秒后自动清理对应灯泡。
+  setInterval(() => {
+    for (const sid of knownSessions) {
+      heartbeat(sid);
+    }
+  }, 5000);
 
   return {
     event: async ({ event }) => {
@@ -49,6 +69,7 @@ export default (async () => {
       if (et === "permission.updated" || et === "permission.asked" || et === "permission.requested") {
         const sid = extractSessionID(event.properties);
         if (!sid) return;
+        knownSessions.add(sid);
         const cur = (pendingInput.get(sid) ?? 0) + 1;
         pendingInput.set(sid, cur);
         await push(sid, "input");
@@ -59,6 +80,7 @@ export default (async () => {
       if (et === "question.asked" || et === "permission.v2.asked") {
         const sid = extractSessionID(event.properties);
         if (!sid) return;
+        knownSessions.add(sid);
         const cur = (pendingInput.get(sid) ?? 0) + 1;
         pendingInput.set(sid, cur);
         await push(sid, "input");
@@ -79,6 +101,7 @@ export default (async () => {
       if (et === "session.status") {
         const { sessionID, status } = event.properties ?? {};
         if (!sessionID) return;
+        knownSessions.add(sessionID);
         if (status.type === "busy") {
           await push(sessionID, "running");
         } else if (status.type === "idle") {
@@ -97,6 +120,7 @@ export default (async () => {
         const sid = event.properties?.info?.id;
         if (!sid) return;
         pendingInput.delete(sid);
+        knownSessions.delete(sid);
         try {
           await fetch(`${monitorUrl()}/remove`, {
             method: "POST",

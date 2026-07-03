@@ -1,4 +1,4 @@
-use crate::store::{RemoveUpdate, StatusUpdate, Store};
+use crate::store::{HeartbeatUpdate, RemoveUpdate, StatusUpdate, Store};
 use std::sync::Arc;
 
 pub fn spawn(
@@ -45,6 +45,15 @@ fn handle(
             .unwrap_or(false),
         ("POST", "/remove") => serde_json::from_str::<RemoveUpdate>(&body)
             .map(|u| store.remove(&u.session_id))
+            .unwrap_or(false),
+        ("POST", "/heartbeat") => serde_json::from_str::<HeartbeatUpdate>(&body)
+            .map(|u| {
+                if u.session_id.is_empty() {
+                    false
+                } else {
+                    store.heartbeat(&u.session_id)
+                }
+            })
             .unwrap_or(false),
         ("GET", "/health") => {
             let resp = tiny_http::Response::from_string("ok");

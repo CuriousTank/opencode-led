@@ -2,6 +2,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -37,11 +38,18 @@ pub struct RemoveUpdate {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct HeartbeatUpdate {
+    pub session_id: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionEntry {
     pub session_id: String,
     pub project: Option<String>,
     pub state: LightState,
+    #[serde(skip_serializing)]
+    pub last_seen: Instant,
 }
 
 #[derive(Default)]
@@ -60,6 +68,7 @@ impl Store {
             session_id: update.session_id.clone(),
             project: update.project,
             state: update.state,
+            last_seen: Instant::now(),
         };
         let changed = match g.get(&update.session_id) {
             Some(prev) => prev.state != entry.state || prev.project != entry.project,
@@ -71,6 +80,28 @@ impl Store {
 
     pub fn remove(&self, session_id: &str) -> bool {
         self.sessions.write().remove(session_id).is_some()
+    }
+
+    /// 刷新 session 的 last_seen（仅当 session 已存在时）。
+    /// 心跳不应创建新 session，只维持已有的。
+    pub fn heartbeat(&self, session_id: &str) -> bool {
+        let mut g = self.sessions.write();
+        if let Some(e) = g.get_mut(session_id) {
+            e.last_seen = Instant::now();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 移除所有 last_seen 超过 timeout 的 session。
+    /// 返回是否有 session 被移除。
+    pub fn sweep(&self, timeout: Duration) -> bool {
+        let mut g = self.sessions.write();
+        let now = Instant::now();
+        let before = g.len();
+        g.retain(|_, e| now.duration_since(e.last_seen) < timeout);
+        g.len() != before
     }
 
     pub fn snapshot(&self) -> Vec<SessionEntry> {
