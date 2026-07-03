@@ -229,12 +229,20 @@ impl App {
         let img = egui::Image::from_texture(&tex)
             .fit_to_exact_size(Vec2::splat(size))
             .tint(tint);
-        let tip = format!(
-            "{}\n{}\n{}",
-            e.session_id,
-            e.project.as_deref().unwrap_or("(no project)"),
-            e.state.label()
-        );
+        let tip = match &e.title {
+            Some(t) if !t.is_empty() => format!(
+                "{}\n{}\n{}",
+                t,
+                e.project.as_deref().unwrap_or("(no project)"),
+                e.state.label()
+            ),
+            _ => format!(
+                "{}\n{}\n{}",
+                e.session_id,
+                e.project.as_deref().unwrap_or("(no project)"),
+                e.state.label()
+            ),
+        };
         ui.add(img).on_hover_text(tip);
     }
 }

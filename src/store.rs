@@ -30,6 +30,8 @@ pub struct StatusUpdate {
     pub session_id: String,
     #[serde(default)]
     pub project: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
     pub state: LightState,
 }
 
@@ -47,6 +49,7 @@ pub struct HeartbeatUpdate {
 pub struct SessionEntry {
     pub session_id: String,
     pub project: Option<String>,
+    pub title: Option<String>,
     pub state: LightState,
     #[serde(skip_serializing)]
     pub last_seen: Instant,
@@ -67,11 +70,12 @@ impl Store {
         let entry = SessionEntry {
             session_id: update.session_id.clone(),
             project: update.project,
+            title: update.title,
             state: update.state,
             last_seen: Instant::now(),
         };
         let changed = match g.get(&update.session_id) {
-            Some(prev) => prev.state != entry.state || prev.project != entry.project,
+            Some(prev) => prev.state != entry.state || prev.project != entry.project || prev.title != entry.title,
             None => true,
         };
         g.insert(update.session_id, entry);

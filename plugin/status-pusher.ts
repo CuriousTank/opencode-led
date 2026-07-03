@@ -20,15 +20,24 @@ function monitorUrl(): string {
 }
 
 async function push(sessionID: string, state: "running" | "done" | "input", project?: string): Promise<void> {
+  sessionStates.set(sessionID, state);
+  const title = sessionTitles.get(sessionID);
   try {
     await fetch(`${monitorUrl()}/status`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session_id: sessionID, state, project }),
+      body: JSON.stringify({ session_id: sessionID, state, project, title }),
     });
   } catch {
     // 监控器没开就静默忽略，避免污染 opencode 日志
   }
+}
+
+/** 仅更新 title（不改变灯泡颜色），用缓存中最后已知的状态重新推送 */
+async function pushTitleUpdate(sessionID: string, project?: string): Promise<void> {
+  const state = sessionStates.get(sessionID);
+  if (!state) return;
+  await push(sessionID, state, project);
 }
 
 async function heartbeat(sessionID: string): Promise<void> {
@@ -52,6 +61,10 @@ export default (async () => {
   const pendingInput = new Map<string, number>();
   // 记录所有活跃的 sessionID（用于心跳）
   const knownSessions = new Set<string>();
+  // 缓存 session 标题（从 session.created / session.updated 事件获取）
+  const sessionTitles = new Map<string, string>();
+  // 缓存 session 最后已知状态，用于 title 更新时重新推送
+  const sessionStates = new Map<string, "running" | "done" | "input">();
 
   // 每 5 秒发送一次心跳，让监控器知道本 opencode 进程还活着。
   // 进程退出后 setInterval 自然停止，监控器在 ~12 秒后自动清理对应灯泡。
@@ -115,12 +128,31 @@ export default (async () => {
         return;
       }
 
+      // --- session 创建/更新：获取标题 ---
+      if (et === "session.created" || et === "session.updated") {
+        const info = event.properties?.info;
+        const sid = info?.id;
+        if (!sid) return;
+        knownSessions.add(sid);
+        if (info.title) {
+          const prev = sessionTitles.get(sid);
+          sessionTitles.set(sid, info.title);
+          // title 变了就推一次（保持灯泡颜色不变）
+          if (prev !== info.title) {
+            await pushTitleUpdate(sid, info.directory);
+          }
+        }
+        return;
+      }
+
       // --- session 删除 ---
       if (et === "session.deleted") {
         const sid = event.properties?.info?.id;
         if (!sid) return;
         pendingInput.delete(sid);
         knownSessions.delete(sid);
+        sessionTitles.delete(sid);
+        sessionStates.delete(sid);
         try {
           await fetch(`${monitorUrl()}/remove`, {
             method: "POST",
