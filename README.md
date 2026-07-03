@@ -4,6 +4,8 @@
 
 A floating, always-on-top traffic light widget that reflects the real-time task status of [opencode](https://opencode.ai).
 
+> ⚠️ **Platform**: Currently tested only on **Ubuntu 20.04 (X11)**. Windows and macOS are **not supported** at this time.
+
 - 🔴 Red: opencode is executing a task (`session.status = busy`)
 - 🟡 Yellow: opencode is waiting for your input/permission (`permission.updated` pending)
 - 🟢 Green: opencode has finished the task (`session.status = idle`)

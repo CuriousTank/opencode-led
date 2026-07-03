@@ -4,6 +4,8 @@
 
 一个悬浮、置顶的「红绿灯」监控器，实时反映 [opencode](https://opencode.ai) 的任务状态。
 
+> ⚠️ **平台**：目前仅在 **Ubuntu 20.04 (X11)** 上经过验证，暂不支持 Windows 和 macOS。
+
 - 🔴 红：opencode 正在执行任务（`session.status = busy`）
 - 🟡 黄：opencode 等待你回复/介入（权限请求挂起 `permission.updated`）
 - 🟢 绿：opencode 已完成任务（`session.status = idle`）
