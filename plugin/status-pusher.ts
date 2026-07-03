@@ -19,27 +19,6 @@ function monitorUrl(): string {
   return `http://127.0.0.1:${port}`;
 }
 
-async function push(sessionID: string, state: "running" | "done" | "input", project?: string): Promise<void> {
-  sessionStates.set(sessionID, state);
-  const title = sessionTitles.get(sessionID);
-  try {
-    await fetch(`${monitorUrl()}/status`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session_id: sessionID, state, project, title }),
-    });
-  } catch {
-    // 监控器没开就静默忽略，避免污染 opencode 日志
-  }
-}
-
-/** 仅更新 title（不改变灯泡颜色），用缓存中最后已知的状态重新推送 */
-async function pushTitleUpdate(sessionID: string, project?: string): Promise<void> {
-  const state = sessionStates.get(sessionID);
-  if (!state) return;
-  await push(sessionID, state, project);
-}
-
 async function heartbeat(sessionID: string): Promise<void> {
   try {
     await fetch(`${monitorUrl()}/heartbeat`, {
@@ -65,6 +44,27 @@ export default (async () => {
   const sessionTitles = new Map<string, string>();
   // 缓存 session 最后已知状态，用于 title 更新时重新推送
   const sessionStates = new Map<string, "running" | "done" | "input">();
+
+  async function push(sessionID: string, state: "running" | "done" | "input", project?: string): Promise<void> {
+    sessionStates.set(sessionID, state);
+    const title = sessionTitles.get(sessionID);
+    try {
+      await fetch(`${monitorUrl()}/status`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_id: sessionID, state, project, title }),
+      });
+    } catch {
+      // 监控器没开就静默忽略，避免污染 opencode 日志
+    }
+  }
+
+  /** 仅更新 title（不改变灯泡颜色），用缓存中最后已知的状态重新推送 */
+  async function pushTitleUpdate(sessionID: string, project?: string): Promise<void> {
+    const state = sessionStates.get(sessionID);
+    if (!state) return;
+    await push(sessionID, state, project);
+  }
 
   // 每 5 秒发送一次心跳，让监控器知道本 opencode 进程还活着。
   // 进程退出后 setInterval 自然停止，监控器在 ~12 秒后自动清理对应灯泡。
