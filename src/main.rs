@@ -106,6 +106,10 @@ impl eframe::App for App {
         // 消费 dirty 标志（这里只是触发重绘，快照在下面直接读）
         let _ = self.dirty.lock();
 
+        // 确保每 2 秒至少重绘一次，让 sweep 能定期执行
+        // （否则无事件时 ui() 不会被调用，过期灯泡不会被清理）
+        ui.ctx().request_repaint_after(Duration::from_secs(2));
+
         // 定期清理过期的 session（心跳超时 = opencode 进程已退出）
         if self.last_sweep.elapsed() >= SWEEP_INTERVAL {
             self.last_sweep = Instant::now();
