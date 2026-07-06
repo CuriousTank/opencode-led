@@ -3,14 +3,14 @@
 // 把 opencode 的 session 状态实时推送到本机运行的 Rust 监控器。
 // 监控器默认监听 127.0.0.1:9912，可用环境变量 OPENCODE_TL_PORT 覆盖。
 //
-// 安装：把本文件放到任一位置，opencode 会自动发现：
-//   - 项目级: <project>/.opencode/plugin/status-pusher.ts
-//   - 全局级: ~/.config/opencode/plugin/status-pusher.ts
+// 核心设计：每个 opencode 进程 = 1 个灯泡。
+// 用 "pid:<进程号>" 作为 session_id，保证每个终端恰好一个灯泡，
+// 不受 subagent、历史 session、idle 状态等问题的干扰。
 //
-// 状态映射:
-//   session.status = busy                  -> running  -> 红灯
-//   session.status = idle (无挂起权限)     -> done     -> 绿灯
-//   permission.updated (权限请求挂起)      -> input    -> 黄灯
+// 状态映射（按优先级聚合）:
+//   任一 session busy                      -> running  -> 红灯
+//   任一 session 有挂起权限/提问            -> input    -> 黄灯
+//   否则                                    -> done     -> 绿灯
 
 import type { Plugin } from "@opencode-ai/plugin";
 
@@ -25,102 +25,86 @@ function extractSessionID(properties: any): string | undefined {
   return properties.sessionID ?? properties.sessionId ?? properties.info?.id ?? properties.info?.sessionID;
 }
 
-export default (async (input) => {
-  const { client } = input;
+export default (async () => {
+  // 用 PID 作为灯泡的唯一标识——每个 opencode 进程恰好一个灯泡
+  const PID_KEY = `pid:${process.pid}`;
 
-  // 记录每个 session 当前是否有挂起的权限请求/提问
+  // 每个 session 当前是否有挂起的权限请求/提问
   const pendingInput = new Map<string, number>();
-  // 记录所有活跃的 sessionID（用于心跳）
-  const knownSessions = new Set<string>();
-  // 缓存 session 标题（从 session.created / session.updated 事件获取）
+  // 缓存 session 标题 / 项目路径 / 状态
   const sessionTitles = new Map<string, string>();
-  // 缓存 session 最后已知状态，用于 title 更新时重新推送
-  const sessionStates = new Map<string, "running" | "done" | "input">();
-  // 记录已知的 subagent session（有 parentID），这些不亮灯泡
-  const subagentSessions = new Set<string>();
-  // 缓存 session 项目路径，用于定时重推
   const sessionProjects = new Map<string, string>();
+  const sessionStates = new Map<string, "running" | "done" | "input">();
+  // 记录已知的 subagent session（有 parentID），不计入聚合
+  const subagentSessions = new Set<string>();
 
-  async function push(sessionID: string, state: "running" | "done" | "input", project?: string): Promise<void> {
-    sessionStates.set(sessionID, state);
-    if (project !== undefined) sessionProjects.set(sessionID, project);
-    const title = sessionTitles.get(sessionID);
-    const proj = sessionProjects.get(sessionID) ?? project;
+  /** 聚合所有非 subagent session 的状态，推送一个灯泡 */
+  async function pushOverall(): Promise<void> {
+    // 优先级: running > input > done
+    let state: "running" | "done" | "input" = "done";
+    let bestSid: string | undefined;
+
+    for (const [sid, s] of sessionStates) {
+      if (subagentSessions.has(sid)) continue;
+      if (s === "running") {
+        state = "running";
+        bestSid = sid;
+        break;
+      }
+      if (s === "input" && state !== "running") {
+        state = "input";
+        bestSid = sid;
+      }
+      if (state === "done" && !bestSid) {
+        bestSid = sid;
+      }
+    }
+
+    const title = bestSid ? sessionTitles.get(bestSid) : undefined;
+    const project = bestSid ? sessionProjects.get(bestSid) : undefined;
+
     try {
       await fetch(`${monitorUrl()}/status`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ session_id: sessionID, state, project: proj, title }),
+        body: JSON.stringify({ session_id: PID_KEY, state, project, title }),
       });
     } catch {
-      // 监控器没开就静默忽略，避免污染 opencode 日志
+      // 监控器没开就静默忽略
     }
   }
 
-  /** 仅更新 title（不改变灯泡颜色），用缓存中最后已知的状态重新推送 */
-  async function pushTitleUpdate(sessionID: string, project?: string): Promise<void> {
-    const state = sessionStates.get(sessionID);
-    if (!state) return;
-    await push(sessionID, state, project);
-  }
+  // 启动时立即注册本进程（绿灯），让监控器马上看到灯泡
+  pushOverall();
 
-  // === 启动报到：仅推送 session.status() 中的活跃 session ===
-  // 注意：不 await，避免阻塞插件加载导致 opencode 崩溃
-  // session.list() 返回 DB 全量历史，无法区分"当前打开"和"历史"，
-  // 所以不用它。idle session 靠事件（session.updated/status）捕获，
-  // 靠定时重推保持灯亮。监控器重启后 5 秒内定时重推恢复所有 session。
-  void (async () => {
-    try {
-      const statusRes = await client.session.status();
-      const statuses = (statusRes as any).data ?? {};
-      for (const [sid, st] of Object.entries(statuses)) {
-        if (subagentSessions.has(sid)) continue;
-        knownSessions.add(sid);
-        const state: "running" | "done" | "input" =
-          (st as any)?.type === "busy" || (st as any)?.type === "retry" ? "running" : "done";
-        await push(sid, state);
-      }
-    } catch {
-      // client 调用失败不影响后续事件监听
-    }
-  })();
-
-  // 每 5 秒重推所有 knownSessions 的状态。
-  // /status 会更新 last_seen，因此不需要单独的心跳。
-  // 进程退出后 setInterval 自然停止，监控器在 ~12 秒后自动清理对应灯泡。
-  // 监控器重启后，本定时器会在 5 秒内重新注册所有活跃 session。
+  // 每 5 秒重推聚合状态，保持灯泡存活 + 监控器重启后自动恢复
   const refreshTimer = setInterval(() => {
-    for (const sid of knownSessions) {
-      const state = sessionStates.get(sid) ?? "done";
-      push(sid, state);
-    }
+    pushOverall();
   }, 5000);
 
   return {
     event: async ({ event }) => {
       const et = event.type;
 
-      // --- 权限请求：opencode 需要用户确认（执行命令、编辑文件等）---
+      // --- 权限请求：opencode 需要用户确认 ---
       if (et === "permission.updated" || et === "permission.asked" || et === "permission.requested") {
         const sid = extractSessionID(event.properties);
-        if (!sid) return;
-        if (subagentSessions.has(sid)) return;
-        knownSessions.add(sid);
+        if (!sid || subagentSessions.has(sid)) return;
         const cur = (pendingInput.get(sid) ?? 0) + 1;
         pendingInput.set(sid, cur);
-        await push(sid, "input");
+        sessionStates.set(sid, "input");
+        await pushOverall();
         return;
       }
 
-      // --- v2 新版提问机制：opencode 向用户提出选择/填空 ---
+      // --- v2 新版提问机制 ---
       if (et === "question.asked" || et === "permission.v2.asked") {
         const sid = extractSessionID(event.properties);
-        if (!sid) return;
-        if (subagentSessions.has(sid)) return;
-        knownSessions.add(sid);
+        if (!sid || subagentSessions.has(sid)) return;
         const cur = (pendingInput.get(sid) ?? 0) + 1;
         pendingInput.set(sid, cur);
-        await push(sid, "input");
+        sessionStates.set(sid, "input");
+        await pushOverall();
         return;
       }
 
@@ -130,7 +114,7 @@ export default (async (input) => {
         if (!sid) return;
         const cur = (pendingInput.get(sid) ?? 1) - 1;
         pendingInput.set(sid, Math.max(0, cur));
-        // 不主动改灯，等后续 session.status 事件纠正
+        // 不主动改状态，等后续 session.status 事件纠正
         return;
       }
 
@@ -138,19 +122,17 @@ export default (async (input) => {
       if (et === "session.status") {
         const { sessionID, status } = event.properties ?? {};
         if (!sessionID) return;
-        // subagent 不亮灯泡
         if (subagentSessions.has(sessionID)) return;
-        knownSessions.add(sessionID);
         if (status.type === "busy") {
-          await push(sessionID, "running");
+          sessionStates.set(sessionID, "running");
         } else if (status.type === "idle") {
-          // idle 时若有挂起权限/提问 -> 黄灯；否则绿灯
           if ((pendingInput.get(sessionID) ?? 0) > 0) {
-            await push(sessionID, "input");
+            sessionStates.set(sessionID, "input");
           } else {
-            await push(sessionID, "done");
+            sessionStates.set(sessionID, "done");
           }
         }
+        await pushOverall();
         return;
       }
 
@@ -159,20 +141,22 @@ export default (async (input) => {
         const info = event.properties?.info;
         const sid = info?.id;
         if (!sid) return;
-        // subagent（有 parentID）不亮灯泡
+        // subagent（有 parentID）不计入聚合
         if (info.parentID) {
           subagentSessions.add(sid);
           return;
         }
-        knownSessions.add(sid);
         if (info.title) {
-          const prev = sessionTitles.get(sid);
           sessionTitles.set(sid, info.title);
-          // title 变了就推一次（保持灯泡颜色不变）
-          if (prev !== info.title) {
-            await pushTitleUpdate(sid, info.directory);
-          }
         }
+        if (info.directory) {
+          sessionProjects.set(sid, info.directory);
+        }
+        // 如果还没有状态，默认 done
+        if (!sessionStates.has(sid)) {
+          sessionStates.set(sid, "done");
+        }
+        await pushOverall();
         return;
       }
 
@@ -181,23 +165,25 @@ export default (async (input) => {
         const sid = event.properties?.info?.id;
         if (!sid) return;
         pendingInput.delete(sid);
-        knownSessions.delete(sid);
         sessionTitles.delete(sid);
-        sessionStates.delete(sid);
         sessionProjects.delete(sid);
+        sessionStates.delete(sid);
         subagentSessions.delete(sid);
-        try {
-          await fetch(`${monitorUrl()}/remove`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ session_id: sid }),
-          });
-        } catch {}
+        // 不发 /remove——进程还活着，灯泡保留，重新聚合即可
+        await pushOverall();
         return;
       }
     },
     dispose: async () => {
       clearInterval(refreshTimer);
+      // 进程退出时主动移除灯泡
+      try {
+        await fetch(`${monitorUrl()}/remove`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ session_id: PID_KEY }),
+        });
+      } catch {}
     },
   };
 }) satisfies Plugin;
