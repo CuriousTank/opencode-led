@@ -74,14 +74,18 @@ export default (async (input) => {
       ]);
       const sessions = (listRes as any).data ?? [];
       const statuses = (statusRes as any).data ?? {};
-      // 遍历 session.list()（当前进程管理的 session），
-      // 用 session.status() 补充 busy/retry 状态
+      const now = Date.now();
+      const RECENT_MS = 60 * 60 * 1000; // 只推送 1 小时内更新的 session
+      // 遍历 session.list()，用 session.status() 补充 busy/retry 状态
       for (const s of sessions) {
         // 跳过 subagent（有 parentID）
         if (s.parentID) {
           subagentSessions.add(s.id);
           continue;
         }
+        // 跳过超过 1 小时未更新的历史 session
+        const updated = s.time?.updated ?? 0;
+        if (updated > 0 && now - updated > RECENT_MS) continue;
         knownSessions.add(s.id);
         if (s.title) sessionTitles.set(s.id, s.title);
         if (s.directory) sessionProjects.set(s.id, s.directory);

@@ -75,6 +75,11 @@ fn handle(
             let _ = req.respond(tiny_http::Response::from_string(body));
             return;
         }
+        ("POST", "/log") => {
+            eprintln!("[plugin] {}", body);
+            let _ = req.respond(tiny_http::Response::empty(200));
+            return;
+        }
         _ => {
             let _ = req.respond(tiny_http::Response::empty(404));
             return;
