@@ -46,6 +46,8 @@ export default (async (input) => {
   const sessionTitles = new Map<string, string>();
   // 缓存 session 最后已知状态，用于 title 更新时重新推送
   const sessionStates = new Map<string, "running" | "done" | "input">();
+  // 记录已知的 subagent session（有 parentID），这些不亮灯泡
+  const subagentSessions = new Set<string>();
 
   async function push(sessionID: string, state: "running" | "done" | "input", project?: string): Promise<void> {
     sessionStates.set(sessionID, state);
@@ -82,9 +84,12 @@ export default (async (input) => {
       const sessionMap = new Map<string, any>();
       for (const s of sessions) {
         sessionMap.set(s.id, s);
+        // 标记 subagent（有 parentID 的不亮灯泡）
+        if (s.parentID) subagentSessions.add(s.id);
       }
-      // 只遍历 statuses（真正活跃的 session），避免历史 session 闪现
+      // 只遍历 statuses（真正活跃的 session），跳过 subagent
       for (const [sid, st] of Object.entries(statuses)) {
+        if (subagentSessions.has(sid)) continue;
         knownSessions.add(sid);
         const s = sessionMap.get(sid);
         if (s?.title) sessionTitles.set(sid, s.title);
@@ -113,6 +118,7 @@ export default (async (input) => {
       if (et === "permission.updated" || et === "permission.asked" || et === "permission.requested") {
         const sid = extractSessionID(event.properties);
         if (!sid) return;
+        if (subagentSessions.has(sid)) return;
         knownSessions.add(sid);
         const cur = (pendingInput.get(sid) ?? 0) + 1;
         pendingInput.set(sid, cur);
@@ -124,6 +130,7 @@ export default (async (input) => {
       if (et === "question.asked" || et === "permission.v2.asked") {
         const sid = extractSessionID(event.properties);
         if (!sid) return;
+        if (subagentSessions.has(sid)) return;
         knownSessions.add(sid);
         const cur = (pendingInput.get(sid) ?? 0) + 1;
         pendingInput.set(sid, cur);
@@ -145,6 +152,8 @@ export default (async (input) => {
       if (et === "session.status") {
         const { sessionID, status } = event.properties ?? {};
         if (!sessionID) return;
+        // subagent 不亮灯泡
+        if (subagentSessions.has(sessionID)) return;
         knownSessions.add(sessionID);
         if (status.type === "busy") {
           await push(sessionID, "running");
@@ -164,6 +173,11 @@ export default (async (input) => {
         const info = event.properties?.info;
         const sid = info?.id;
         if (!sid) return;
+        // subagent（有 parentID）不亮灯泡
+        if (info.parentID) {
+          subagentSessions.add(sid);
+          return;
+        }
         knownSessions.add(sid);
         if (info.title) {
           const prev = sessionTitles.get(sid);
@@ -184,6 +198,7 @@ export default (async (input) => {
         knownSessions.delete(sid);
         sessionTitles.delete(sid);
         sessionStates.delete(sid);
+        subagentSessions.delete(sid);
         try {
           await fetch(`${monitorUrl()}/remove`, {
             method: "POST",
