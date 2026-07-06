@@ -86,25 +86,15 @@ impl Store {
         self.sessions.write().remove(session_id).is_some()
     }
 
-    /// 刷新 session 的 last_seen。
-    /// 如果 session 不存在，创建一个默认 Done 状态的 session（用于监控器重启后心跳恢复）。
+    /// 刷新 session 的 last_seen（仅当 session 已存在时）。
+    /// 心跳不创建新 session，只维持已有的。
     pub fn heartbeat(&self, session_id: &str) -> bool {
         let mut g = self.sessions.write();
         if let Some(e) = g.get_mut(session_id) {
             e.last_seen = Instant::now();
-            false
-        } else {
-            g.insert(
-                session_id.to_string(),
-                SessionEntry {
-                    session_id: session_id.to_string(),
-                    project: None,
-                    title: None,
-                    state: LightState::Done,
-                    last_seen: Instant::now(),
-                },
-            );
             true
+        } else {
+            false
         }
     }
 

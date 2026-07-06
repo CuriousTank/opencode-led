@@ -19,16 +19,6 @@ function monitorUrl(): string {
   return `http://127.0.0.1:${port}`;
 }
 
-async function heartbeat(sessionID: string): Promise<void> {
-  try {
-    await fetch(`${monitorUrl()}/heartbeat`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session_id: sessionID }),
-    });
-  } catch {}
-}
-
 /** 从事件 properties 中尽量提取 sessionID（兼容多种事件结构） */
 function extractSessionID(properties: any): string | undefined {
   if (!properties) return undefined;
@@ -48,15 +38,19 @@ export default (async (input) => {
   const sessionStates = new Map<string, "running" | "done" | "input">();
   // 记录已知的 subagent session（有 parentID），这些不亮灯泡
   const subagentSessions = new Set<string>();
+  // 缓存 session 项目路径，用于定时重推
+  const sessionProjects = new Map<string, string>();
 
   async function push(sessionID: string, state: "running" | "done" | "input", project?: string): Promise<void> {
     sessionStates.set(sessionID, state);
+    if (project !== undefined) sessionProjects.set(sessionID, project);
     const title = sessionTitles.get(sessionID);
+    const proj = sessionProjects.get(sessionID) ?? project;
     try {
       await fetch(`${monitorUrl()}/status`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ session_id: sessionID, state, project, title }),
+        body: JSON.stringify({ session_id: sessionID, state, project: proj, title }),
       });
     } catch {
       // 监控器没开就静默忽略，避免污染 opencode 日志
@@ -102,11 +96,14 @@ export default (async (input) => {
     }
   })();
 
-  // 每 5 秒发送一次心跳，让监控器知道本 opencode 进程还活着。
+  // 每 5 秒重推所有 knownSessions 的状态。
+  // /status 会更新 last_seen，因此不需要单独的心跳。
   // 进程退出后 setInterval 自然停止，监控器在 ~12 秒后自动清理对应灯泡。
-  const heartbeatTimer = setInterval(() => {
+  // 监控器重启后，本定时器会在 5 秒内重新注册所有活跃 session。
+  const refreshTimer = setInterval(() => {
     for (const sid of knownSessions) {
-      heartbeat(sid);
+      const state = sessionStates.get(sid) ?? "done";
+      push(sid, state);
     }
   }, 5000);
 
@@ -198,6 +195,7 @@ export default (async (input) => {
         knownSessions.delete(sid);
         sessionTitles.delete(sid);
         sessionStates.delete(sid);
+        sessionProjects.delete(sid);
         subagentSessions.delete(sid);
         try {
           await fetch(`${monitorUrl()}/remove`, {
@@ -210,7 +208,7 @@ export default (async (input) => {
       }
     },
     dispose: async () => {
-      clearInterval(heartbeatTimer);
+      clearInterval(refreshTimer);
     },
   };
 }) satisfies Plugin;
