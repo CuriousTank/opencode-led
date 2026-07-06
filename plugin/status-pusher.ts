@@ -64,7 +64,7 @@ export default (async (input) => {
     await push(sessionID, state, project);
   }
 
-  // === 启动时主动报到：把当前活跃的 session 推送给监控器 ===
+  // === 启动时主动报到：把当前进程管理的 session 推送给监控器 ===
   // 注意：不 await，避免阻塞插件加载导致 opencode 崩溃
   void (async () => {
     try {
@@ -74,22 +74,21 @@ export default (async (input) => {
       ]);
       const sessions = (listRes as any).data ?? [];
       const statuses = (statusRes as any).data ?? {};
-      // 构建 id -> session 查找表，用于补充 title / directory
-      const sessionMap = new Map<string, any>();
+      // 遍历 session.list()（当前进程管理的 session），
+      // 用 session.status() 补充 busy/retry 状态
       for (const s of sessions) {
-        sessionMap.set(s.id, s);
-        // 标记 subagent（有 parentID 的不亮灯泡）
-        if (s.parentID) subagentSessions.add(s.id);
-      }
-      // 只遍历 statuses（真正活跃的 session），跳过 subagent
-      for (const [sid, st] of Object.entries(statuses)) {
-        if (subagentSessions.has(sid)) continue;
-        knownSessions.add(sid);
-        const s = sessionMap.get(sid);
-        if (s?.title) sessionTitles.set(sid, s.title);
+        // 跳过 subagent（有 parentID）
+        if (s.parentID) {
+          subagentSessions.add(s.id);
+          continue;
+        }
+        knownSessions.add(s.id);
+        if (s.title) sessionTitles.set(s.id, s.title);
+        if (s.directory) sessionProjects.set(s.id, s.directory);
+        const st = statuses[s.id];
         const state: "running" | "done" | "input" =
           (st as any)?.type === "busy" || (st as any)?.type === "retry" ? "running" : "done";
-        await push(sid, state, s?.directory);
+        await push(s.id, state, s.directory);
       }
     } catch {
       // client 调用失败不影响后续事件监听
