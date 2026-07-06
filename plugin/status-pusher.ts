@@ -25,7 +25,8 @@ function extractSessionID(properties: any): string | undefined {
   return properties.sessionID ?? properties.sessionId ?? properties.info?.id ?? properties.info?.sessionID;
 }
 
-export default (async () => {
+export default (async (input) => {
+  const { client } = input;
   // 用 PID 作为灯泡的唯一标识——每个 opencode 进程恰好一个灯泡
   const PID_KEY = `pid:${process.pid}`;
 
@@ -37,6 +38,8 @@ export default (async () => {
   const sessionStates = new Map<string, "running" | "done" | "input">();
   // 记录已知的 subagent session（有 parentID），不计入聚合
   const subagentSessions = new Set<string>();
+  // 最近活跃的非 subagent session ID（用于 tooltip 显示标题）
+  let primarySessionId: string | undefined;
 
   /** 聚合所有非 subagent session 的状态，推送一个灯泡 */
   async function pushOverall(): Promise<void> {
@@ -60,8 +63,10 @@ export default (async () => {
       }
     }
 
-    const title = bestSid ? sessionTitles.get(bestSid) : undefined;
-    const project = bestSid ? sessionProjects.get(bestSid) : undefined;
+    // 如果 sessionStates 没有条目，回退到 primarySessionId
+    const sid = bestSid ?? primarySessionId;
+    const title = sid ? sessionTitles.get(sid) : undefined;
+    const project = sid ? sessionProjects.get(sid) : undefined;
 
     try {
       await fetch(`${monitorUrl()}/status`, {
@@ -76,6 +81,24 @@ export default (async () => {
 
   // 启动时立即注册本进程（绿灯），让监控器马上看到灯泡
   pushOverall();
+
+  // 异步加载 session 标题（用于 tooltip），不影响启动
+  void (async () => {
+    try {
+      const listRes = await client.session.list();
+      const sessions = (listRes as any).data ?? [];
+      // 按 time.updated 降序排列，取最近活跃的非 subagent session
+      sessions.sort((a: any, b: any) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
+      for (const s of sessions) {
+        if (s.parentID) continue;
+        if (s.title) sessionTitles.set(s.id, s.title);
+        if (s.directory) sessionProjects.set(s.id, s.directory);
+        // 第一个（最近更新的）作为 primary
+        if (!primarySessionId) primarySessionId = s.id;
+      }
+      await pushOverall();
+    } catch {}
+  })();
 
   // 每 5 秒重推聚合状态，保持灯泡存活 + 监控器重启后自动恢复
   const refreshTimer = setInterval(() => {
@@ -123,6 +146,7 @@ export default (async () => {
         const { sessionID, status } = event.properties ?? {};
         if (!sessionID) return;
         if (subagentSessions.has(sessionID)) return;
+        primarySessionId = sessionID;
         if (status.type === "busy") {
           sessionStates.set(sessionID, "running");
         } else if (status.type === "idle") {
@@ -146,6 +170,7 @@ export default (async () => {
           subagentSessions.add(sid);
           return;
         }
+        primarySessionId = sid;
         if (info.title) {
           sessionTitles.set(sid, info.title);
         }

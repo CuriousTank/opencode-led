@@ -70,6 +70,30 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             // 把 egui ctx 存起来，供 server 线程触发重绘
             *ctx_slot.lock() = Some(cc.egui_ctx.clone());
+
+            // 加载 CJK 字体，让中文正常显示
+            let mut fonts = egui::FontDefinitions::default();
+            for path in [
+                "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            ] {
+                if let Ok(data) = std::fs::read(path) {
+                    fonts.font_data.insert(
+                        "cjk".to_owned(),
+                        egui::FontData::from_owned(data).into(),
+                    );
+                    if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                        fam.push("cjk".to_owned());
+                    }
+                    if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                        fam.push("cjk".to_owned());
+                    }
+                    break;
+                }
+            }
+            cc.egui_ctx.set_fonts(fonts);
+
             Ok(Box::new(App {
                 store,
                 icons,
@@ -233,20 +257,22 @@ impl App {
         let img = egui::Image::from_texture(&tex)
             .fit_to_exact_size(Vec2::splat(size))
             .tint(tint);
-        let tip = match &e.title {
-            Some(t) if !t.is_empty() => format!(
-                "{}\n{}\n{}",
-                t,
-                e.project.as_deref().unwrap_or("(no project)"),
-                e.state.label()
-            ),
-            _ => format!(
-                "{}\n{}\n{}",
-                e.session_id,
-                e.project.as_deref().unwrap_or("(no project)"),
-                e.state.label()
-            ),
+        let display_name = match &e.title {
+            Some(t) if !t.is_empty() => t.clone(),
+            _ => {
+                if e.session_id.starts_with("pid:") {
+                    "opencode".to_string()
+                } else {
+                    e.session_id.clone()
+                }
+            }
         };
+        let tip = format!(
+            "{}\n{}\n{}",
+            display_name,
+            e.project.as_deref().unwrap_or("(no project)"),
+            e.state.label()
+        );
         ui.add(img).on_hover_text(tip);
     }
 }
