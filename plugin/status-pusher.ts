@@ -64,35 +64,21 @@ export default (async (input) => {
     await push(sessionID, state, project);
   }
 
-  // === 启动时主动报到：把当前进程管理的 session 推送给监控器 ===
+  // === 启动报到：仅推送 session.status() 中的活跃 session ===
   // 注意：不 await，避免阻塞插件加载导致 opencode 崩溃
+  // session.list() 返回 DB 全量历史，无法区分"当前打开"和"历史"，
+  // 所以不用它。idle session 靠事件（session.updated/status）捕获，
+  // 靠定时重推保持灯亮。监控器重启后 5 秒内定时重推恢复所有 session。
   void (async () => {
     try {
-      const [listRes, statusRes] = await Promise.all([
-        client.session.list(),
-        client.session.status(),
-      ]);
-      const sessions = (listRes as any).data ?? [];
+      const statusRes = await client.session.status();
       const statuses = (statusRes as any).data ?? {};
-      const now = Date.now();
-      const RECENT_MS = 60 * 60 * 1000; // 只推送 1 小时内更新的 session
-      // 遍历 session.list()，用 session.status() 补充 busy/retry 状态
-      for (const s of sessions) {
-        // 跳过 subagent（有 parentID）
-        if (s.parentID) {
-          subagentSessions.add(s.id);
-          continue;
-        }
-        // 跳过超过 1 小时未更新的历史 session
-        const updated = s.time?.updated ?? 0;
-        if (updated > 0 && now - updated > RECENT_MS) continue;
-        knownSessions.add(s.id);
-        if (s.title) sessionTitles.set(s.id, s.title);
-        if (s.directory) sessionProjects.set(s.id, s.directory);
-        const st = statuses[s.id];
+      for (const [sid, st] of Object.entries(statuses)) {
+        if (subagentSessions.has(sid)) continue;
+        knownSessions.add(sid);
         const state: "running" | "done" | "input" =
           (st as any)?.type === "busy" || (st as any)?.type === "retry" ? "running" : "done";
-        await push(s.id, state, s.directory);
+        await push(sid, state);
       }
     } catch {
       // client 调用失败不影响后续事件监听
