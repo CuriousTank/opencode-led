@@ -9,6 +9,7 @@ mod icons;
 mod platform;
 mod server;
 mod store;
+mod wm;
 
 use icons::Icons;
 use store::{LightState, SessionEntry, Store};
@@ -286,8 +287,9 @@ impl App {
         };
         let (tint, size) = pulse(e.state, ui.ctx().input(|i| i.time));
 
-        // 固定 ICON_PX 槽位 + drag 交互（同一 Response 兼顾拖拽和 hover）
-        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(ICON_PX), egui::Sense::drag());
+        // 固定 ICON_PX 槽位 + click/drag 交互（单击=置顶终端，拖动=移动灯泡）
+        let (rect, resp) =
+            ui.allocate_exact_size(Vec2::splat(ICON_PX), egui::Sense::click_and_drag());
 
         // 脉冲图像居中绘制在固定槽位内（不因脉冲改变布局）
         let img_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(size));
@@ -297,6 +299,17 @@ impl App {
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             tint,
         );
+
+        // 单击：后台置顶对应 opencode 的终端窗口
+        if resp.clicked() {
+            let sid = e.session_id.clone();
+            let title = e.title.clone();
+            std::thread::spawn(move || {
+                if let Some(pid) = sid.strip_prefix("pid:").and_then(|s| s.parse::<i32>().ok()) {
+                    wm::raise_window_for_pid(pid, title.as_deref());
+                }
+            });
+        }
 
         let display_name = match &e.title {
             Some(t) if !t.is_empty() => t.clone(),
