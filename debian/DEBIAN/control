@@ -1,5 +1,5 @@
 Package: opencode-traffic-light
-Version: 0.2.0
+Version: 0.3.0
 Architecture: amd64
 Maintainer: CuriousTank
 Depends: libx11-6, libxcb1, libxi6, libxext6
