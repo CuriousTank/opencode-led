@@ -194,7 +194,31 @@ impl eframe::App for App {
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
                 tint,
             );
-            bulb_responses.push(resp.on_hover_text("waiting for opencode…"));
+            let mut tip = egui::Tooltip::for_enabled(&resp);
+            tip.popup = tip
+                .popup
+                .align(egui::RectAlign::TOP)
+                .align_alternatives(&[])
+                .gap(6.0);
+            tip.show(|ui| {
+                egui::Frame {
+                    fill: Color32::from_rgba_unmultiplied(252, 252, 254, 250),
+                    stroke: egui::Stroke::new(1.0, Color32::from_black_alpha(15)),
+                    shadow: egui::Shadow {
+                        offset: [0, 2],
+                        blur: 12,
+                        spread: 0,
+                        color: Color32::from_black_alpha(50),
+                    },
+                    corner_radius: 8.0.into(),
+                    inner_margin: egui::Margin::same(10),
+                    ..Default::default()
+                }
+                .show(ui, |ui| {
+                    ui.label("waiting for opencode…");
+                });
+            });
+            bulb_responses.push(resp);
         } else {
             for e in &snap {
                 let resp = self.render_bulb(&mut bulb_ui, e);
@@ -324,7 +348,13 @@ impl App {
         let dot_color = state_color(e.state);
         let status_label = e.state.label();
 
-        resp.on_hover_ui(|ui| {
+        let mut tip = egui::Tooltip::for_enabled(&resp);
+        tip.popup = tip
+            .popup
+            .align(egui::RectAlign::TOP)
+            .align_alternatives(&[])
+            .gap(6.0);
+        tip.show(|ui| {
             egui::Frame {
                 fill: Color32::from_rgba_unmultiplied(252, 252, 254, 250),
                 stroke: egui::Stroke::new(1.0, Color32::from_black_alpha(15)),
@@ -364,7 +394,9 @@ impl App {
                     );
                 });
             });
-        })
+        });
+
+        resp
     }
 }
 
