@@ -18,7 +18,9 @@ static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
 const DEFAULT_PORT: u16 = 9912;
 const ICON_PX: f32 = 64.0;
 const GAP_PX: f32 = 6.0;
-const PAD_PX: f32 = 2.0; // 最小透明边距，让窗口几乎贴合灯泡，减少对其他窗口的阻挡
+const PAD_PX: f32 = 2.0;
+const TOOLTIP_ROOM: f32 = 140.0;
+const WIN_W_MIN: f32 = 240.0; // 最小透明边距，让窗口几乎贴合灯泡，减少对其他窗口的阻挡
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -57,7 +59,10 @@ fn main() -> eframe::Result<()> {
         .with_resizable(false)
         .with_always_on_top()
         .with_position([100.0, 100.0])
-        .with_inner_size(Vec2::new(ICON_PX + PAD_PX * 2.0, ICON_PX + PAD_PX * 2.0));
+        .with_inner_size(Vec2::new(
+            WIN_W_MIN,
+            ICON_PX + PAD_PX * 2.0 + TOOLTIP_ROOM,
+        ));
 
     let native_opts = eframe::NativeOptions {
         viewport,
@@ -102,6 +107,7 @@ fn main() -> eframe::Result<()> {
                 last_above_time: 0.0,
                 last_sweep: Instant::now(),
                 drag: None,
+                last_bulb_rects: Vec::new(),
             }))
         }),
     )
@@ -115,6 +121,7 @@ struct App {
     last_above_time: f64,
     last_sweep: Instant,
     drag: Option<DragState>,
+    last_bulb_rects: Vec<egui::Rect>,
 }
 
 /// 拖拽中：保持鼠标相对窗口左上角的偏移恒定
@@ -152,52 +159,65 @@ impl eframe::App for App {
         visuals.extreme_bg_color = Color32::TRANSPARENT;
         ui.ctx().set_visuals(visuals);
 
-        ui.spacing_mut().item_spacing.x = GAP_PX;
-
-        // 直接铺满窗口绘制灯泡（窗口已贴合灯泡尺寸，无多余透明边）
-        ui.horizontal_centered(|ui| {
-            if snap.is_empty() {
-                let tex = self.icons.get(&LightState::Done).expect("icon");
-                let tint = Color32::WHITE.linear_multiply(0.15);
-                ui.add(
-                    egui::Image::from_texture(&tex)
-                        .fit_to_exact_size(Vec2::splat(ICON_PX))
-                        .tint(tint),
-                )
-                .on_hover_text("waiting for opencode…");
-            } else {
-                for e in &snap {
-                    self.render_bulb(ui, e);
-                }
-            }
-        });
-
-        // 手动 X11 拖拽：用根坐标（稳定，无正反馈）
+        // 灯泡行定位：窗口底部居中，上方留 TOOLTIP_ROOM 给 tooltip 展示空间
         let win_rect = ui.max_rect();
-        let center = win_rect.center();
-        let bulb_area = egui::Rect::from_center_size(center, Vec2::splat(ICON_PX));
-        let drag_resp = ui.interact(bulb_area, ui.id().with("drag"), egui::Sense::drag());
+        let bulbs_w =
+            count as f32 * ICON_PX + count.saturating_sub(1) as f32 * GAP_PX;
+        let bulbs_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                win_rect.center().x - bulbs_w / 2.0,
+                win_rect.bottom() - PAD_PX - ICON_PX,
+            ),
+            egui::vec2(bulbs_w.max(ICON_PX), ICON_PX),
+        );
 
-        if drag_resp.hovered() && self.drag.is_none() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-        }
+        // 在灯泡行位置创建子 UI
+        let mut bulb_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(bulbs_rect)
+                .id_salt("bulbs")
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        bulb_ui.spacing_mut().item_spacing.x = GAP_PX;
 
-        // 拖拽开始：用 XQueryPointer 同时拿根坐标和窗口内坐标
-        // win_x/win_y 是鼠标相对窗口左上角的偏移，坐标系与 XMoveWindow 一致，最稳
-        if drag_resp.drag_started() && self.drag.is_none() {
-            if let Some(h) = platform::extract_handles(frame) {
-                if let Some((_mx, _my, wx, wy)) = platform::query_pointer(h) {
-                    self.drag = Some(DragState {
-                        handles: h,
-                        offset: egui::vec2(wx as f32, wy as f32),
-                    });
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                }
+        let mut bulb_responses: Vec<egui::Response> = Vec::new();
+
+        if snap.is_empty() {
+            let tex = self.icons.get(&LightState::Done).expect("icon");
+            let tint = Color32::WHITE.linear_multiply(0.15);
+            let (rect, resp) =
+                bulb_ui.allocate_exact_size(Vec2::splat(ICON_PX), egui::Sense::hover());
+            bulb_ui.painter().image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                tint,
+            );
+            bulb_responses.push(resp.on_hover_text("waiting for opencode…"));
+        } else {
+            for e in &snap {
+                let resp = self.render_bulb(&mut bulb_ui, e);
+                bulb_responses.push(resp);
             }
         }
 
-        // 定期重申 _NET_WM_STATE_ABOVE，防止被其他窗口遮挡
-        // 每秒一次，开销极小
+        // 逐灯泡拖拽检测（替代旧的单一 drag 层，避免遮挡中间灯泡的 hover）
+        for resp in &bulb_responses {
+            if resp.drag_started() && self.drag.is_none() {
+                if let Some(h) = platform::extract_handles(frame) {
+                    if let Some((_mx, _my, wx, wy)) = platform::query_pointer(h) {
+                        self.drag = Some(DragState {
+                            handles: h,
+                            offset: egui::vec2(wx as f32, wy as f32),
+                        });
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    }
+                }
+                break;
+            }
+        }
+
+        // 定期重申 _NET_WM_STATE_ABOVE
         let now = ui.ctx().input(|i| i.time);
         if now - self.last_above_time > 1.0 {
             if let Some(h) = platform::extract_handles(frame) {
@@ -214,7 +234,6 @@ impl eframe::App for App {
                 platform::move_window(d.handles, nx, ny);
             }
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-            // 拖拽期间持续请求重绘，确保跟得上鼠标移动
             ui.ctx().request_repaint();
         }
 
@@ -224,14 +243,27 @@ impl eframe::App for App {
             self.drag = None;
         }
 
-        // 自适应窗口大小（只在 session 数量变化时才调整，避免每帧触发 resize 干扰拖拽）
+        // X11 input shape：只有灯泡区域接收鼠标事件，透明区域点击穿透
+        let current_rects: Vec<egui::Rect> =
+            bulb_responses.iter().map(|r| r.rect).collect();
+        if current_rects != self.last_bulb_rects {
+            self.last_bulb_rects = current_rects.clone();
+            if !current_rects.is_empty() {
+                if let Some(h) = platform::extract_handles(frame) {
+                    let ppp = ui.ctx().pixels_per_point();
+                    platform::set_input_region(h, &current_rects, ppp);
+                }
+            }
+        }
+
+        // 自适应窗口大小（session 数量变化时调整）
         if self.last_count != snap.len() {
             self.last_count = snap.len();
-            let want_w =
-                count as f32 * ICON_PX + (count.saturating_sub(1)) as f32 * GAP_PX + PAD_PX * 2.0;
+            let want_w = (bulbs_w + PAD_PX * 2.0).max(WIN_W_MIN);
+            let want_h = ICON_PX + PAD_PX * 2.0 + TOOLTIP_ROOM;
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
                 want_w,
-                ICON_PX + PAD_PX * 2.0,
+                want_h,
             )));
         }
 
@@ -247,16 +279,25 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn render_bulb(&self, ui: &mut egui::Ui, e: &SessionEntry) {
+    fn render_bulb(&self, ui: &mut egui::Ui, e: &SessionEntry) -> egui::Response {
         let tex = match self.icons.get(&e.state) {
             Some(t) => t,
-            None => return,
+            None => return ui.allocate_response(Vec2::ZERO, egui::Sense::hover()),
         };
-        // 红灯/黄灯轻微脉冲
         let (tint, size) = pulse(e.state, ui.ctx().input(|i| i.time));
-        let img = egui::Image::from_texture(&tex)
-            .fit_to_exact_size(Vec2::splat(size))
-            .tint(tint);
+
+        // 固定 ICON_PX 槽位 + drag 交互（同一 Response 兼顾拖拽和 hover）
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(ICON_PX), egui::Sense::drag());
+
+        // 脉冲图像居中绘制在固定槽位内（不因脉冲改变布局）
+        let img_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(size));
+        ui.painter().image(
+            tex.id(),
+            img_rect,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            tint,
+        );
+
         let display_name = match &e.title {
             Some(t) if !t.is_empty() => t.clone(),
             _ => {
@@ -267,13 +308,58 @@ impl App {
                 }
             }
         };
-        let tip = format!(
-            "{}\n{}\n{}",
-            display_name,
-            e.project.as_deref().unwrap_or("(no project)"),
-            e.state.label()
-        );
-        ui.add(img).on_hover_text(tip);
+        let dot_color = state_color(e.state);
+        let status_label = e.state.label();
+
+        resp.on_hover_ui(|ui| {
+            egui::Frame {
+                fill: Color32::from_rgba_unmultiplied(252, 252, 254, 250),
+                stroke: egui::Stroke::new(1.0, Color32::from_black_alpha(15)),
+                shadow: egui::Shadow {
+                    offset: [0, 2],
+                    blur: 12,
+                    spread: 0,
+                    color: Color32::from_black_alpha(50),
+                },
+                corner_radius: 8.0.into(),
+                inner_margin: egui::Margin::same(10),
+                ..Default::default()
+            }
+            .show(ui, |ui| {
+                ui.set_width_range(80.0..=200.0);
+                ui.horizontal(|ui| {
+                    let (dot_rect, _) =
+                        ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+                    let center = dot_rect.center() - egui::vec2(0.0, -1.0);
+                    ui.painter().circle_filled(center, 4.0, dot_color);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&display_name)
+                                .size(15.0)
+                                .color(Color32::from_rgb(30, 30, 35))
+                                .strong(),
+                        )
+                        .wrap(),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    ui.label(
+                        egui::RichText::new(status_label)
+                            .size(12.0)
+                            .color(Color32::from_rgb(110, 110, 120)),
+                    );
+                });
+            });
+        })
+    }
+}
+
+fn state_color(state: LightState) -> Color32 {
+    match state {
+        LightState::Running => Color32::from_rgb(255, 59, 48),
+        LightState::Input => Color32::from_rgb(255, 204, 0),
+        LightState::Done => Color32::from_rgb(52, 199, 89),
     }
 }
 

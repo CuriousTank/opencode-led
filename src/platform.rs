@@ -159,6 +159,77 @@ union XEvent {
     pad: [std::ffi::c_long; 24],
 }
 
+/// 设置窗口的输入区域（XShape ShapeInput）。
+/// 只有 `rects` 覆盖的区域接收鼠标事件，其余透明区域点击穿透到下层窗口。
+pub fn set_input_region(h: XHandles, rects: &[egui::Rect], scale: f32) {
+    #[cfg(target_os = "linux")]
+    {
+        let xrects: Vec<XRectangle> = rects
+            .iter()
+            .map(|r| XRectangle {
+                x: (r.left().max(0.0) * scale) as i16,
+                y: (r.top().max(0.0) * scale) as i16,
+                width: (r.width().max(0.0) * scale) as u16,
+                height: (r.height().max(0.0) * scale) as u16,
+            })
+            .collect();
+        if xrects.is_empty() {
+            return;
+        }
+        unsafe {
+            XShapeCombineRectangles(
+                h.display as *mut std::ffi::c_void,
+                h.window,
+                SHAPE_INPUT,
+                0,
+                0,
+                xrects.as_ptr(),
+                xrects.len() as std::ffi::c_int,
+                SHAPE_SET,
+                UNSORTED,
+            );
+            XFlush(h.display as *mut std::ffi::c_void);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (h, rects, scale);
+    }
+}
+
+#[cfg(target_os = "linux")]
+const SHAPE_INPUT: std::ffi::c_int = 2;
+#[cfg(target_os = "linux")]
+const SHAPE_SET: std::ffi::c_int = 0;
+#[cfg(target_os = "linux")]
+const UNSORTED: std::ffi::c_int = 0;
+
+/// XRectangle: x/y 有符号短整数，width/height 无符号短整数
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct XRectangle {
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+}
+
+#[cfg(target_os = "linux")]
+#[link(name = "Xext")]
+unsafe extern "C" {
+    fn XShapeCombineRectangles(
+        display: *mut std::ffi::c_void,
+        window: u64,
+        dest_kind: std::ffi::c_int,
+        x_offset: std::ffi::c_int,
+        y_offset: std::ffi::c_int,
+        rectangles: *const XRectangle,
+        n_rects: std::ffi::c_int,
+        op: std::ffi::c_int,
+        ordering: std::ffi::c_int,
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[link(name = "X11")]
 unsafe extern "C" {
