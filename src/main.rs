@@ -5,6 +5,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod config;
 mod icons;
 mod platform;
 mod server;
@@ -24,6 +25,7 @@ const TOOLTIP_ROOM: f32 = 140.0;
 const WIN_W_MIN: f32 = 240.0; // 最小透明边距，让窗口几乎贴合灯泡，减少对其他窗口的阻挡
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(12);
+const SETTINGS_PANEL_H: f32 = 320.0; // 设置面板展开后的额外高度
 
 fn main() -> eframe::Result<()> {
     let port = std::env::var("OPENCODE_TL_PORT")
@@ -109,6 +111,11 @@ fn main() -> eframe::Result<()> {
                 last_sweep: Instant::now(),
                 drag: None,
                 last_bulb_rects: Vec::new(),
+                settings_mode: false,
+                settings_rects: Vec::new(),
+                last_settings_mode: false,
+                menu_open: false,
+                menu_pos: egui::pos2(0.0, 0.0),
             }))
         }),
     )
@@ -123,6 +130,15 @@ struct App {
     last_sweep: Instant,
     drag: Option<DragState>,
     last_bulb_rects: Vec<egui::Rect>,
+    settings_mode: bool,
+    /// 每行的 rect（设置面板中的三行），用于拖拽命中检测
+    settings_rects: Vec<(LightState, egui::Rect)>,
+    /// 上一帧是否处于设置模式（检测切换时调整窗口大小）
+    last_settings_mode: bool,
+    /// 右键菜单是否打开
+    menu_open: bool,
+    /// 菜单打开时捕获的位置（固定不随光标移动）
+    menu_pos: egui::Pos2,
 }
 
 /// 拖拽中：保持鼠标相对窗口左上角的偏移恒定
@@ -153,15 +169,30 @@ impl eframe::App for App {
         let snap = self.store.snapshot();
         let count = snap.len().max(1);
 
-        // 透明背景
+        // 设置模式下用浅色面板背景（不透明），正常模式下透明
         let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = Color32::TRANSPARENT;
-        visuals.window_fill = Color32::TRANSPARENT;
+        if self.settings_mode {
+            visuals.panel_fill = Color32::from_rgb(245, 246, 248);
+            visuals.window_fill = Color32::from_rgb(245, 246, 248);
+        } else {
+            visuals.panel_fill = Color32::TRANSPARENT;
+            visuals.window_fill = Color32::TRANSPARENT;
+        }
         visuals.extreme_bg_color = Color32::TRANSPARENT;
         ui.ctx().set_visuals(visuals);
 
-        // 灯泡行定位：窗口底部居中，上方留 TOOLTIP_ROOM 给 tooltip 展示空间
         let win_rect = ui.max_rect();
+
+        // ── 设置面板（上方区域） ──
+        if self.settings_mode {
+            let panel_rect = egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(win_rect.width(), win_rect.height() - ICON_PX - PAD_PX * 2.0),
+            );
+            self.render_settings(ui, frame, panel_rect);
+        }
+
+        // ── 灯泡行定位：窗口底部居中 ──
         let bulbs_w =
             count as f32 * ICON_PX + count.saturating_sub(1) as f32 * GAP_PX;
         let bulbs_rect = egui::Rect::from_min_size(
@@ -185,7 +216,7 @@ impl eframe::App for App {
 
         if snap.is_empty() {
             let tex = self.icons.get(&LightState::Done).expect("icon");
-            let tint = Color32::WHITE.linear_multiply(0.15);
+            let tint = Color32::WHITE.linear_multiply(if self.settings_mode { 0.5 } else { 0.15 });
             let (rect, resp) =
                 bulb_ui.allocate_exact_size(Vec2::splat(ICON_PX), egui::Sense::hover());
             bulb_ui.painter().image(
@@ -194,30 +225,6 @@ impl eframe::App for App {
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
                 tint,
             );
-            let mut tip = egui::Tooltip::for_enabled(&resp);
-            tip.popup = tip
-                .popup
-                .align(egui::RectAlign::TOP)
-                .align_alternatives(&[])
-                .gap(6.0);
-            tip.show(|ui| {
-                egui::Frame {
-                    fill: Color32::from_rgba_unmultiplied(252, 252, 254, 250),
-                    stroke: egui::Stroke::new(1.0, Color32::from_black_alpha(15)),
-                    shadow: egui::Shadow {
-                        offset: [0, 2],
-                        blur: 12,
-                        spread: 0,
-                        color: Color32::from_black_alpha(50),
-                    },
-                    corner_radius: 8.0.into(),
-                    inner_margin: egui::Margin::same(10),
-                    ..Default::default()
-                }
-                .show(ui, |ui| {
-                    ui.label("waiting for opencode…");
-                });
-            });
             bulb_responses.push(resp);
         } else {
             for e in &snap {
@@ -226,19 +233,21 @@ impl eframe::App for App {
             }
         }
 
-        // 逐灯泡拖拽检测（替代旧的单一 drag 层，避免遮挡中间灯泡的 hover）
-        for resp in &bulb_responses {
-            if resp.drag_started() && self.drag.is_none() {
-                if let Some(h) = platform::extract_handles(frame) {
-                    if let Some((_mx, _my, wx, wy)) = platform::query_pointer(h) {
-                        self.drag = Some(DragState {
-                            handles: h,
-                            offset: egui::vec2(wx as f32, wy as f32),
-                        });
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        // 逐灯泡拖拽检测（设置模式下不拖拽）
+        if !self.settings_mode {
+            for resp in &bulb_responses {
+                if resp.drag_started() && self.drag.is_none() {
+                    if let Some(h) = platform::extract_handles(frame) {
+                        if let Some((_mx, _my, wx, wy)) = platform::query_pointer(h) {
+                            self.drag = Some(DragState {
+                                handles: h,
+                                offset: egui::vec2(wx as f32, wy as f32),
+                            });
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        }
                     }
+                    break;
                 }
-                break;
             }
         }
 
@@ -268,38 +277,154 @@ impl eframe::App for App {
             self.drag = None;
         }
 
-        // X11 input shape：只有灯泡区域接收鼠标事件，透明区域点击穿透
-        let current_rects: Vec<egui::Rect> =
-            bulb_responses.iter().map(|r| r.rect).collect();
-        if current_rects != self.last_bulb_rects {
-            self.last_bulb_rects = current_rects.clone();
-            if !current_rects.is_empty() {
+        // ── 右键：捕获位置 + 打开菜单 ──
+        if ui.input(|i| i.pointer.secondary_pressed()) {
+            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                self.menu_pos = pos;
+            }
+            self.menu_open = true;
+        }
+
+        // ── 菜单渲染（固定位置）──
+        if self.menu_open {
+            let mut close_menu = false;
+
+            egui::Area::new(egui::Id::new("context_menu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(self.menu_pos)
+                .interactable(true)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame {
+                        fill: Color32::from_rgb(250, 250, 252),
+                        stroke: egui::Stroke::new(1.0, Color32::from_black_alpha(20)),
+                        corner_radius: 8.0.into(),
+                        inner_margin: egui::Margin::same(4),
+                        ..Default::default()
+                    }
+                    .show(ui, |ui| {
+                        ui.set_min_width(140.0);
+                        let menu_label = if self.settings_mode {
+                            "✓ 自定义图标"
+                        } else {
+                            "⚙  自定义图标"
+                        };
+                        let menu_resp = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(menu_label)
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(30, 30, 35)),
+                            )
+                            .fill(Color32::TRANSPARENT),
+                        );
+                        if menu_resp.clicked() {
+                            self.settings_mode = !self.settings_mode;
+                            close_menu = true;
+                        }
+                        ui.separator();
+                        let quit_resp = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("❌ 退出")
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(30, 30, 35)),
+                            )
+                            .fill(Color32::TRANSPARENT),
+                        );
+                        if quit_resp.clicked() {
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                });
+
+            // 获取菜单 Area 的 rect（当前帧已渲染，可读到）
+            let menu_rect = egui::AreaState::load(ui.ctx(), egui::Id::new("context_menu"))
+                .map(|s| s.rect());
+
+            // 自动关闭：光标既不在灯泡区也不在菜单区 → 关闭
+            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                let in_bulbs = bulb_responses.iter().any(|r| r.rect.contains(pos));
+                let in_menu = menu_rect.map_or(false, |r| r.contains(pos));
+                if !in_bulbs && !in_menu {
+                    close_menu = true;
+                }
+            }
+
+            // ESC 关闭
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close_menu = true;
+            }
+
+            if close_menu {
+                self.menu_open = false;
+            }
+        }
+
+        // ── X11 input shape ──
+        // 设置模式：整个面板可交互
+        // 菜单打开：灯泡 + 菜单区域可交互
+        // 正常：仅灯泡区域
+        if self.settings_mode {
+            let full_rect = ui.max_rect();
+            if Some(&full_rect) != self.last_bulb_rects.first() {
+                self.last_bulb_rects = vec![full_rect];
                 if let Some(h) = platform::extract_handles(frame) {
                     let ppp = ui.ctx().pixels_per_point();
-                    platform::set_input_region(h, &current_rects, ppp);
+                    platform::set_input_region(h, &[full_rect], ppp);
+                }
+            }
+        } else {
+            let mut input_rects: Vec<egui::Rect> =
+                bulb_responses.iter().map(|r| r.rect).collect();
+            // 菜单打开时，把菜单 rect 也加入输入区（否则按钮点击穿透）
+            if self.menu_open {
+                if let Some(mr) = egui::AreaState::load(ui.ctx(), egui::Id::new("context_menu"))
+                    .map(|s| s.rect())
+                {
+                    input_rects.push(mr);
+                }
+            }
+            if input_rects != self.last_bulb_rects && !input_rects.is_empty() {
+                self.last_bulb_rects = input_rects.clone();
+                if let Some(h) = platform::extract_handles(frame) {
+                    let ppp = ui.ctx().pixels_per_point();
+                    platform::set_input_region(h, &input_rects, ppp);
                 }
             }
         }
 
-        // 自适应窗口大小（session 数量变化时调整）
-        if self.last_count != snap.len() {
+        // 自适应窗口大小（session 数量变化 / 设置模式切换 时调整）
+        let need_resize = self.last_count != snap.len() || self.last_settings_mode != self.settings_mode;
+        if need_resize {
             self.last_count = snap.len();
+            self.last_settings_mode = self.settings_mode;
             let want_w = (bulbs_w + PAD_PX * 2.0).max(WIN_W_MIN);
-            let want_h = ICON_PX + PAD_PX * 2.0 + TOOLTIP_ROOM;
+            let mut want_h = ICON_PX + PAD_PX * 2.0 + TOOLTIP_ROOM;
+            if self.settings_mode {
+                want_h += SETTINGS_PANEL_H;
+            }
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
                 want_w,
                 want_h,
             )));
         }
 
-        // 右键退出
-        if ui.input(|i| i.pointer.secondary_clicked()) {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        // 动画图标：如果有可见的 GIF 灯泡，安排下一帧重绘
+        if !self.settings_mode {
+            let visible: Vec<LightState> = if snap.is_empty() {
+                vec![LightState::Done]
+            } else {
+                snap.iter().map(|e| e.state).collect()
+            };
+            self.icons.schedule_animation_repaint(ui.ctx(), &visible);
         }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        if self.settings_mode {
+            [0.96, 0.965, 0.97, 1.0] // 设置模式：不透明浅灰
+        } else {
+            [0.0, 0.0, 0.0, 0.0] // 正常模式：全透明
+        }
     }
 }
 
@@ -309,7 +434,12 @@ impl App {
             Some(t) => t,
             None => return ui.allocate_response(Vec2::ZERO, egui::Sense::hover()),
         };
-        let (tint, size) = pulse(e.state, ui.ctx().input(|i| i.time));
+        // GIF 动画图标跳过 pulse 效果（自身已有动画）；静态图保留呼吸效果
+        let (tint, size) = if self.icons.is_animated(&e.state) {
+            (Color32::WHITE, ICON_PX)
+        } else {
+            pulse(e.state, ui.ctx().input(|i| i.time))
+        };
 
         // 固定 ICON_PX 槽位 + click/drag 交互（单击=置顶终端，拖动=移动灯泡）
         let (rect, resp) =
@@ -397,6 +527,191 @@ impl App {
         });
 
         resp
+    }
+
+    /// 渲染自定义图标设置面板
+    fn render_settings(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, panel_rect: egui::Rect) {
+        let mut settings_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(panel_rect)
+                .id_salt("settings_panel"),
+        );
+        settings_ui.set_min_size(panel_rect.size());
+        settings_ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+
+        let states = [LightState::Running, LightState::Input, LightState::Done];
+        let labels = ["运行中", "需输入", "已完成"];
+        let descs = ["(红灯)", "(黄灯)", "(绿灯)"];
+
+        // 标题行
+        settings_ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(
+                egui::RichText::new("自定义图标")
+                    .size(16.0)
+                    .color(Color32::from_rgb(30, 30, 35))
+                    .strong(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let done_btn = ui.add_sized(
+                    [64.0, 24.0],
+                    egui::Button::new(
+                        egui::RichText::new("完成")
+                            .size(13.0)
+                            .color(Color32::from_rgb(30, 30, 35)),
+                    )
+                    .fill(Color32::from_rgb(220, 220, 228)),
+                );
+                if done_btn.clicked() {
+                    self.settings_mode = false;
+                }
+            });
+        });
+
+        ui.separator();
+
+        // 三行图标预览
+        self.settings_rects.clear();
+        for (i, state) in states.iter().enumerate() {
+            let (row_rect, _) = settings_ui.allocate_exact_size(
+                egui::vec2(panel_rect.width() - 24.0, 64.0),
+                egui::Sense::hover(),
+            );
+            // 记录行的 rect，用于拖拽命中检测
+            self.settings_rects.push((*state, row_rect));
+
+            // 高亮：鼠标悬停在此行
+            let hovered = ui.input(|input| {
+                input.pointer.hover_pos().map_or(false, |pos| row_rect.contains(pos))
+            });
+            let row_bg = if hovered {
+                Color32::from_rgba_unmultiplied(230, 240, 255, 200)
+            } else {
+                Color32::TRANSPARENT
+            };
+            settings_ui.painter().rect_filled(
+                row_rect,
+                6.0,
+                row_bg,
+            );
+
+            // 左侧：图标预览（40x40，居中在行内）
+            let preview_size = 40.0;
+            let preview_rect = egui::Rect::from_center_size(
+                egui::pos2(row_rect.left() + 28.0, row_rect.center().y),
+                Vec2::splat(preview_size),
+            );
+            if let Some(tex) = self.icons.get(state) {
+                settings_ui.painter().image(
+                    tex.id(),
+                    preview_rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+
+            // 中间：色点 + 标签 + 文件名
+            let label_x = row_rect.left() + 60.0;
+            // 色点
+            settings_ui.painter().circle_filled(
+                egui::pos2(label_x + 4.0, row_rect.center().y - 10.0),
+                5.0,
+                state_color(*state),
+            );
+            settings_ui.painter().text(
+                egui::pos2(label_x + 16.0, row_rect.center().y - 10.0),
+                egui::Align2::LEFT_CENTER,
+                labels[i],
+                egui::FontId::proportional(14.0),
+                Color32::from_rgb(40, 40, 45),
+            );
+            let sub_text = if self.icons.is_custom(state) {
+                config::custom_description(state).unwrap_or_else(|| "自定义".to_string())
+            } else {
+                format!("{} 默认图标", descs[i])
+            };
+            settings_ui.painter().text(
+                egui::pos2(label_x, row_rect.center().y + 8.0),
+                egui::Align2::LEFT_CENTER,
+                &sub_text,
+                egui::FontId::proportional(11.0),
+                if self.icons.is_custom(state) {
+                    Color32::from_rgb(52, 149, 89)
+                } else {
+                    Color32::from_rgb(140, 140, 150)
+                },
+            );
+
+            // 右侧：重置按钮（仅自定义时显示）
+            let reset_x = row_rect.right() - 60.0;
+            let reset_rect = egui::Rect::from_center_size(
+                egui::pos2(reset_x, row_rect.center().y),
+                egui::vec2(50.0, 22.0),
+            );
+            if self.icons.is_custom(state) {
+                let mut btn_ui = settings_ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(reset_rect)
+                        .layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)),
+                );
+                let reset_resp = btn_ui.add_sized(
+                    [50.0, 22.0],
+                    egui::Button::new(
+                        egui::RichText::new("↺ 恢复")
+                            .size(11.0)
+                            .color(Color32::from_rgb(120, 60, 60)),
+                    )
+                    .fill(Color32::from_rgb(245, 230, 230)),
+                );
+                if reset_resp.clicked() {
+                    let _ = config::remove_icon(state);
+                    self.icons.reload(ui.ctx(), &ASSETS, *state);
+                }
+            }
+        }
+
+        // 底部提示
+        settings_ui.add_space(4.0);
+        settings_ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(
+                egui::RichText::new("把图片拖到对应行即可替换 · 支持 PNG/JPG/GIF")
+                    .size(10.5)
+                    .color(Color32::from_rgb(140, 140, 150)),
+            );
+        });
+
+        // ── 拖拽检测：检查 dropped_files ──
+        let dropped = ui.input(|i| i.raw.dropped_files.clone());
+        if !dropped.is_empty() {
+            if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                // 检查鼠标在哪个行
+                for (state, rect) in &self.settings_rects {
+                    if rect.contains(pointer) {
+                        if let Some(file) = dropped.first() {
+                            if let Some(path) = &file.path {
+                                match config::install_icon(path, state) {
+                                    Ok(dest) => {
+                                        eprintln!("[settings] installed {} → {}", path.display(), dest.display());
+                                        self.icons.reload(ui.ctx(), &ASSETS, *state);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[settings] install failed: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 设置面板内也需要动画图标重绘（预览中的 GIF 要动）
+        let all_states = vec![LightState::Running, LightState::Input, LightState::Done];
+        self.icons.schedule_animation_repaint(ui.ctx(), &all_states);
+
+        let _ = frame; // frame 参数当前未使用，保留以便未来扩展
     }
 }
 

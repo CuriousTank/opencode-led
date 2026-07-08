@@ -18,6 +18,7 @@ A floating, always-on-top traffic light widget that reflects the real-time task 
 - **💬 Hover tooltips** — Hover a bulb to see the session title and current status. Tooltips appear above the bulb row and stay stable while you hover.
 - **🪟 Transparent & always-on-top** — Borderless, click-through (XShape input region), stays above all windows without blocking interaction.
 - **✋ Draggable** — Drag any bulb to reposition the widget.
+- **🎨 Custom icons** — Right-click any bulb → "Customize Icons" to open the settings panel. Drag your own images (PNG / JPG / **animated GIF**) onto each colour to replace the default bulbs. Want a beating heart for red, a bouncing dot for yellow, or a confetti animation for green? Just drop the file in.
 
 ## Demo
 
@@ -36,6 +37,10 @@ A floating, always-on-top traffic light widget that reflects the real-time task 
 ### 📦 Dynamic bulb tracking (sessions appear/disappear in real time)
 
 ![](assets/dynamic_bulbs_2x.gif)
+
+### 🎨 Custom icons (drag your own images or GIFs)
+
+![](assets/setting_icon_2x.gif)
 
 ## Architecture
 
