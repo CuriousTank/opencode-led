@@ -10,6 +10,15 @@ A floating, always-on-top traffic light widget that reflects the real-time task 
 - 🟡 Yellow: opencode is waiting for your input/permission (`permission.updated` pending)
 - 🟢 Green: opencode has finished the task (`session.status = idle`)
 
+## Features
+
+- **🔴🟡🟢 Real-time status** — Red (busy) / Yellow (needs input) / Green (idle), with a pulsing animation for active states.
+- **📦 Dynamic bulb count** — Automatically tracks opencode process creation and termination. Each running opencode session gets its own bulb; bulbs appear and disappear in real time as sessions start and exit. No manual configuration needed.
+- **🖱️ Click to raise terminal** — Click any bulb to instantly bring the corresponding opencode terminal window to the foreground (cross-workspace, via EWMH `_NET_ACTIVE_WINDOW`). The window is matched by walking the process tree (`/proc`) and scoring window titles.
+- **💬 Hover tooltips** — Hover a bulb to see the session title and current status. Tooltips appear above the bulb row and stay stable while you hover.
+- **🪟 Transparent & always-on-top** — Borderless, click-through (XShape input region), stays above all windows without blocking interaction.
+- **✋ Draggable** — Drag any bulb to reposition the widget.
+
 ## Demo
 
 ### 🔴 Thinking (Red)
@@ -19,6 +28,14 @@ A floating, always-on-top traffic light widget that reflects the real-time task 
 ### 🟡 Asking for input (Yellow)
 
 ![](assets/choice_2x.gif)
+
+### 🖱️ Click bulb to raise terminal
+
+![](assets/pinned_window_2x.gif)
+
+### 📦 Dynamic bulb tracking (sessions appear/disappear in real time)
+
+![](assets/dynamic_bulbs_2x.gif)
 
 ## Architecture
 
@@ -42,7 +59,7 @@ opencode process                   Rust monitor process
 Download the latest `.deb` from [GitHub Releases](https://github.com/CuriousTank/opencode-led/releases):
 
 ```bash
-sudo dpkg -i opencode-traffic-light_0.1.0_amd64.deb
+sudo dpkg -i opencode-traffic-light_0.3.0_amd64.deb
 sudo apt-get install -f   # auto-resolve missing dependencies
 ```
 
@@ -79,7 +96,11 @@ opencode-traffic-light          # if installed via .deb
 opencode
 ```
 
-A traffic light window will appear. Drag to move, right-click to quit.
+A traffic light window will appear:
+- **Drag** any bulb to move the widget
+- **Click** a bulb to raise its terminal window to the foreground
+- **Hover** a bulb to see the session title and status
+- **Right-click** to quit
 
 ## Configuration
 

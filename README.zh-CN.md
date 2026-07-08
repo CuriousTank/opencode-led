@@ -10,6 +10,15 @@
 - 🟡 黄：opencode 等待你回复/介入（权限请求挂起 `permission.updated`）
 - 🟢 绿：opencode 已完成任务（`session.status = idle`）
 
+## 功能特性
+
+- **🔴🟡🟢 实时状态** — 红（执行中）/黄（需输入）/绿（完成），活跃状态带脉冲动画。
+- **📦 动态灯泡数量** — 自动追踪 opencode 进程的创建与消亡。每个运行中的 opencode session 对应一颗灯泡，session 启动/退出时灯泡实时增减，无需手动配置。
+- **🖱️ 点击置顶终端** — 点击任意灯泡，瞬间将对应的 opencode 终端窗口置顶到前台（跨工作区，通过 EWMH `_NET_ACTIVE_WINDOW` 实现）。窗口匹配基于进程树遍历（`/proc`）+ 窗口标题评分。
+- **💬 悬停提示** — 鼠标悬停灯泡显示 session 标题和当前状态。提示框出现在灯泡行上方，悬停期间稳定不闪烁。
+- **🪟 透明置顶** — 无边框、点击穿透（XShape 输入区域），悬浮于所有窗口之上且不阻挡操作。
+- **✋ 可拖拽** — 拖动任意灯泡即可重新定位。
+
 ## 演示
 
 ### 🔴 正在思考（红灯）
@@ -19,6 +28,14 @@
 ### 🟡 询问状态（黄灯）
 
 ![](assets/choice_2x.gif)
+
+### 🖱️ 点击灯泡置顶终端
+
+![](assets/pinned_window_2x.gif)
+
+### 📦 动态灯泡追踪（session 实时增减）
+
+![](assets/dynamic_bulbs_2x.gif)
 
 ## 架构
 
@@ -42,7 +59,7 @@ opencode 进程                    Rust 监控器进程
 从 [GitHub Releases](https://github.com/CuriousTank/opencode-led/releases) 下载最新的 `.deb`：
 
 ```bash
-sudo dpkg -i opencode-traffic-light_0.1.0_amd64.deb
+sudo dpkg -i opencode-traffic-light_0.3.0_amd64.deb
 sudo apt-get install -f   # 自动补齐缺失依赖
 ```
 
@@ -79,7 +96,11 @@ opencode-traffic-light          # .deb 安装的
 opencode
 ```
 
-启动后会弹出一个红绿灯窗口，拖动可移动位置，右键退出。
+启动后会弹出一个红绿灯窗口：
+- **拖动**任意灯泡移动位置
+- **点击**灯泡将对应终端窗口置顶到前台
+- **悬停**灯泡查看 session 标题和状态
+- **右键**退出
 
 ## 配置
 
