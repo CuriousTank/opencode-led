@@ -81,6 +81,20 @@ pub fn move_window(h: XHandles, x: i32, y: i32) {
     }
 }
 
+/// 直接调整窗口大小（物理像素）。在 `with_resizable(false)` 时 egui 的 InnerSize 命令无效，
+/// 需要用 XResizeWindow 绕过。
+pub fn resize_window(h: XHandles, w_phys: i32, h_phys: i32) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        XResizeWindow(h.display as *mut std::ffi::c_void, h.window, w_phys, h_phys);
+        XFlush(h.display as *mut std::ffi::c_void);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (h, w_phys, h_phys);
+    }
+}
+
 /// 设置窗口的 _NET_WM_STATE_ABOVE，确保始终置顶。
 /// 通过向 root 窗口发送 ClientMessage 实现（EWMH 规范）。
 pub fn set_above(h: XHandles) {
@@ -249,6 +263,12 @@ unsafe extern "C" {
         window: u64,
         x: std::ffi::c_int,
         y: std::ffi::c_int,
+    ) -> std::ffi::c_int;
+    fn XResizeWindow(
+        display: *mut std::ffi::c_void,
+        window: u64,
+        width: std::ffi::c_int,
+        height: std::ffi::c_int,
     ) -> std::ffi::c_int;
     fn XFlush(display: *mut std::ffi::c_void) -> std::ffi::c_int;
     fn XDefaultRootWindow(display: *mut std::ffi::c_void) -> u64;

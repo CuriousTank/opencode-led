@@ -1,4 +1,4 @@
-use egui::{Color32, Vec2, ViewportBuilder};
+use egui::{Color32, StrokeKind, Vec2, ViewportBuilder};
 use eframe::egui;
 use include_dir::{include_dir, Dir};
 use parking_lot::Mutex;
@@ -25,7 +25,8 @@ const TOOLTIP_ROOM: f32 = 140.0;
 const WIN_W_MIN: f32 = 240.0; // 最小透明边距，让窗口几乎贴合灯泡，减少对其他窗口的阻挡
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(12);
-const SETTINGS_PANEL_H: f32 = 320.0; // 设置面板展开后的额外高度
+const SETTINGS_PANEL_H: f32 = 470.0; // 设置面板高度（标题+3卡片+底部提示）
+const SETTINGS_PANEL_W: f32 = 420.0; // 设置面板宽度
 
 fn main() -> eframe::Result<()> {
     let port = std::env::var("OPENCODE_TL_PORT")
@@ -59,7 +60,7 @@ fn main() -> eframe::Result<()> {
         .with_title("opencode traffic light")
         .with_decorations(false)
         .with_transparent(true)
-        .with_resizable(false)
+        .with_resizable(true)
         .with_always_on_top()
         .with_position([100.0, 100.0])
         .with_inner_size(Vec2::new(
@@ -116,6 +117,8 @@ fn main() -> eframe::Result<()> {
                 last_settings_mode: false,
                 menu_open: false,
                 menu_pos: egui::pos2(0.0, 0.0),
+                file_dialog_state: None,
+                format_error: None,
             }))
         }),
     )
@@ -131,7 +134,7 @@ struct App {
     drag: Option<DragState>,
     last_bulb_rects: Vec<egui::Rect>,
     settings_mode: bool,
-    /// 每行的 rect（设置面板中的三行），用于拖拽命中检测
+    /// 每张卡片的拖拽区 rect，用于拖拽命中检测
     settings_rects: Vec<(LightState, egui::Rect)>,
     /// 上一帧是否处于设置模式（检测切换时调整窗口大小）
     last_settings_mode: bool,
@@ -139,6 +142,10 @@ struct App {
     menu_open: bool,
     /// 菜单打开时捕获的位置（固定不随光标移动）
     menu_pos: egui::Pos2,
+    /// 文件选择对话框结果（异步回调）
+    file_dialog_state: Option<(LightState, std::sync::mpsc::Receiver<Option<std::path::PathBuf>>)>,
+    /// 格式校验错误提示
+    format_error: Option<(Instant, String)>,
 }
 
 /// 拖拽中：保持鼠标相对窗口左上角的偏移恒定
@@ -172,8 +179,8 @@ impl eframe::App for App {
         // 设置模式下用浅色面板背景（不透明），正常模式下透明
         let mut visuals = egui::Visuals::dark();
         if self.settings_mode {
-            visuals.panel_fill = Color32::from_rgb(245, 246, 248);
-            visuals.window_fill = Color32::from_rgb(245, 246, 248);
+            visuals.panel_fill = Color32::from_rgb(0xF7, 0xF8, 0xFA);
+            visuals.window_fill = Color32::from_rgb(0xF7, 0xF8, 0xFA);
         } else {
             visuals.panel_fill = Color32::TRANSPARENT;
             visuals.window_fill = Color32::TRANSPARENT;
@@ -304,9 +311,9 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         ui.set_min_width(140.0);
                         let menu_label = if self.settings_mode {
-                            "✓ 自定义图标"
+                            "✓ Customize Icons"
                         } else {
-                            "⚙  自定义图标"
+                            "⚙  Customize Icons"
                         };
                         let menu_resp = ui.add(
                             egui::Button::new(
@@ -323,7 +330,7 @@ impl eframe::App for App {
                         ui.separator();
                         let quit_resp = ui.add(
                             egui::Button::new(
-                                egui::RichText::new("❌ 退出")
+                                egui::RichText::new("❌ Quit")
                                     .size(13.0)
                                     .color(Color32::from_rgb(30, 30, 35)),
                             )
@@ -397,11 +404,17 @@ impl eframe::App for App {
         if need_resize {
             self.last_count = snap.len();
             self.last_settings_mode = self.settings_mode;
-            let want_w = (bulbs_w + PAD_PX * 2.0).max(WIN_W_MIN);
-            let mut want_h = ICON_PX + PAD_PX * 2.0 + TOOLTIP_ROOM;
-            if self.settings_mode {
-                want_h += SETTINGS_PANEL_H;
-            }
+            let want_w = if self.settings_mode {
+                SETTINGS_PANEL_W
+            } else {
+                (bulbs_w + PAD_PX * 2.0).max(WIN_W_MIN)
+            };
+            let want_h = if self.settings_mode {
+                SETTINGS_PANEL_H + ICON_PX + PAD_PX * 2.0
+            } else {
+                ICON_PX + PAD_PX * 2.0 + TOOLTIP_ROOM
+            };
+            // with_resizable(true) + egui InnerSize command
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
                 want_w,
                 want_h,
@@ -421,7 +434,7 @@ impl eframe::App for App {
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         if self.settings_mode {
-            [0.96, 0.965, 0.97, 1.0] // 设置模式：不透明浅灰
+            [0xF7 as f32 / 255.0, 0xF8 as f32 / 255.0, 0xFA as f32 / 255.0, 1.0] // #F7F8FA
         } else {
             [0.0, 0.0, 0.0, 0.0] // 正常模式：全透明
         }
@@ -529,155 +542,124 @@ impl App {
         resp
     }
 
-    /// 渲染自定义图标设置面板
-    fn render_settings(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, panel_rect: egui::Rect) {
-        let mut settings_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(panel_rect)
-                .id_salt("settings_panel"),
-        );
-        settings_ui.set_min_size(panel_rect.size());
-        settings_ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
-
-        let states = [LightState::Running, LightState::Input, LightState::Done];
-        let labels = ["运行中", "需输入", "已完成"];
-        let descs = ["(红灯)", "(黄灯)", "(绿灯)"];
-
-        // 标题行
-        settings_ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui.label(
-                egui::RichText::new("自定义图标")
-                    .size(16.0)
-                    .color(Color32::from_rgb(30, 30, 35))
-                    .strong(),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let done_btn = ui.add_sized(
-                    [64.0, 24.0],
-                    egui::Button::new(
-                        egui::RichText::new("完成")
-                            .size(13.0)
-                            .color(Color32::from_rgb(30, 30, 35)),
-                    )
-                    .fill(Color32::from_rgb(220, 220, 228)),
-                );
-                if done_btn.clicked() {
-                    self.settings_mode = false;
+    /// 渲染自定义图标设置面板 — 现代化卡片式布局
+    fn render_settings(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame, panel_rect: egui::Rect) {
+        if let Some((state, rx)) = &self.file_dialog_state {
+            if let Ok(path_opt) = rx.try_recv() {
+                if let Some(path) = path_opt {
+                    if Self::validate_icon_file(&path) {
+                        match config::install_icon(&path, state) {
+                            Ok(dest) => {
+                                eprintln!("[settings] installed {} → {}", path.display(), dest.display());
+                                self.icons.reload(ui.ctx(), &ASSETS, *state);
+                            }
+                            Err(e) => {
+                                eprintln!("[settings] install failed: {}", e);
+                            }
+                        }
+                    } else {
+                        self.format_error = Some((
+                            Instant::now(),
+                            path.extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("?")
+                                .to_string(),
+                        ));
+                    }
                 }
-            });
-        });
-
-        ui.separator();
-
-        // 三行图标预览
-        self.settings_rects.clear();
-        for (i, state) in states.iter().enumerate() {
-            let (row_rect, _) = settings_ui.allocate_exact_size(
-                egui::vec2(panel_rect.width() - 24.0, 64.0),
-                egui::Sense::hover(),
-            );
-            // 记录行的 rect，用于拖拽命中检测
-            self.settings_rects.push((*state, row_rect));
-
-            // 高亮：鼠标悬停在此行
-            let hovered = ui.input(|input| {
-                input.pointer.hover_pos().map_or(false, |pos| row_rect.contains(pos))
-            });
-            let row_bg = if hovered {
-                Color32::from_rgba_unmultiplied(230, 240, 255, 200)
-            } else {
-                Color32::TRANSPARENT
-            };
-            settings_ui.painter().rect_filled(
-                row_rect,
-                6.0,
-                row_bg,
-            );
-
-            // 左侧：图标预览（40x40，居中在行内）
-            let preview_size = 40.0;
-            let preview_rect = egui::Rect::from_center_size(
-                egui::pos2(row_rect.left() + 28.0, row_rect.center().y),
-                Vec2::splat(preview_size),
-            );
-            if let Some(tex) = self.icons.get(state) {
-                settings_ui.painter().image(
-                    tex.id(),
-                    preview_rect,
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-            }
-
-            // 中间：色点 + 标签 + 文件名
-            let label_x = row_rect.left() + 60.0;
-            // 色点
-            settings_ui.painter().circle_filled(
-                egui::pos2(label_x + 4.0, row_rect.center().y - 10.0),
-                5.0,
-                state_color(*state),
-            );
-            settings_ui.painter().text(
-                egui::pos2(label_x + 16.0, row_rect.center().y - 10.0),
-                egui::Align2::LEFT_CENTER,
-                labels[i],
-                egui::FontId::proportional(14.0),
-                Color32::from_rgb(40, 40, 45),
-            );
-            let sub_text = if self.icons.is_custom(state) {
-                config::custom_description(state).unwrap_or_else(|| "自定义".to_string())
-            } else {
-                format!("{} 默认图标", descs[i])
-            };
-            settings_ui.painter().text(
-                egui::pos2(label_x, row_rect.center().y + 8.0),
-                egui::Align2::LEFT_CENTER,
-                &sub_text,
-                egui::FontId::proportional(11.0),
-                if self.icons.is_custom(state) {
-                    Color32::from_rgb(52, 149, 89)
-                } else {
-                    Color32::from_rgb(140, 140, 150)
-                },
-            );
-
-            // 右侧：重置按钮（仅自定义时显示）
-            let reset_x = row_rect.right() - 60.0;
-            let reset_rect = egui::Rect::from_center_size(
-                egui::pos2(reset_x, row_rect.center().y),
-                egui::vec2(50.0, 22.0),
-            );
-            if self.icons.is_custom(state) {
-                let mut btn_ui = settings_ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(reset_rect)
-                        .layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)),
-                );
-                let reset_resp = btn_ui.add_sized(
-                    [50.0, 22.0],
-                    egui::Button::new(
-                        egui::RichText::new("↺ 恢复")
-                            .size(11.0)
-                            .color(Color32::from_rgb(120, 60, 60)),
-                    )
-                    .fill(Color32::from_rgb(245, 230, 230)),
-                );
-                if reset_resp.clicked() {
-                    let _ = config::remove_icon(state);
-                    self.icons.reload(ui.ctx(), &ASSETS, *state);
-                }
+                self.file_dialog_state = None;
             }
         }
 
-        // 底部提示
-        settings_ui.add_space(4.0);
-        settings_ui.horizontal(|ui| {
-            ui.add_space(12.0);
+        let has_error = self
+            .format_error
+            .as_ref()
+            .map(|(t, _)| t.elapsed() < Duration::from_secs(3))
+            .unwrap_or(false);
+        if !has_error {
+            self.format_error = None;
+        }
+
+        // ── 主面板容器 ──
+        egui::Frame {
+            fill: Color32::from_rgb(0xF7, 0xF8, 0xFA),
+            inner_margin: egui::Margin {
+                left: 16, right: 16, top: 14, bottom: 8,
+            },
+            ..Default::default()
+        }
+        .show(ui, |ui| {
+            // ── 标题栏 ──
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Custom Status Icons")
+                        .size(15.0)
+                        .color(Color32::from_rgb(0x1A, 0x1A, 0x1A))
+                        .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let done_btn = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("Done")
+                                .size(12.0)
+                                .color(Color32::from_rgb(0x1A, 0x1A, 0x1A)),
+                        )
+                        .fill(Color32::from_rgb(0xE8, 0xE8, 0xEC))
+                        .corner_radius(4.0)
+                        .min_size(egui::vec2(56.0, 24.0)),
+                    );
+                    if done_btn.clicked() {
+                        self.settings_mode = false;
+                    }
+                });
+            });
+
+            // 格式错误提示
+            if has_error {
+                ui.add_space(4.0);
+                egui::Frame {
+                    fill: Color32::from_rgb(255, 242, 240),
+                    stroke: egui::Stroke::new(1.0, Color32::from_rgb(255, 120, 117)),
+                    corner_radius: 4.0.into(),
+                    inner_margin: egui::Margin::same(8),
+                    ..Default::default()
+                }
+                .show(ui, |ui| {
+                    let ext = self.format_error.as_ref().map(|(_, e)| e.clone()).unwrap_or_default();
+                    ui.label(
+                        egui::RichText::new(format!("Unsupported: .{} — use PNG/JPG/GIF", ext))
+                            .size(12.0)
+                            .color(Color32::from_rgb(194, 40, 0)),
+                    );
+                });
+            }
+
+            ui.add_space(8.0);
+
+            // ── 卡片列表 ──
+            let states = [LightState::Running, LightState::Input, LightState::Done];
+            let state_names = ["Running", "Need Manual Action", "Completed"];
+            let state_colors = [
+                Color32::from_rgb(0xFF, 0x4D, 0x4F),
+                Color32::from_rgb(0xFA, 0xAD, 0x14),
+                Color32::from_rgb(0x52, 0xC4, 0x1A),
+            ];
+
+            self.settings_rects.clear();
+            let has_dragged_files = ui.input(|i| !i.raw.hovered_files.is_empty());
+
+            for (i, state) in states.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(8.0);
+                }
+                self.render_card(ui, *state, state_names[i], state_colors[i], has_dragged_files);
+            }
+
+            ui.add_space(8.0);
             ui.label(
-                egui::RichText::new("把图片拖到对应行即可替换 · 支持 PNG/JPG/GIF")
+                egui::RichText::new("Supported: PNG / JPG / GIF")
                     .size(10.5)
-                    .color(Color32::from_rgb(140, 140, 150)),
+                    .color(Color32::from_rgb(0x99, 0x99, 0x99)),
             );
         });
 
@@ -685,19 +667,27 @@ impl App {
         let dropped = ui.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
             if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
-                // 检查鼠标在哪个行
                 for (state, rect) in &self.settings_rects {
                     if rect.contains(pointer) {
                         if let Some(file) = dropped.first() {
                             if let Some(path) = &file.path {
-                                match config::install_icon(path, state) {
-                                    Ok(dest) => {
-                                        eprintln!("[settings] installed {} → {}", path.display(), dest.display());
-                                        self.icons.reload(ui.ctx(), &ASSETS, *state);
+                                if Self::validate_icon_file(path) {
+                                    match config::install_icon(path, state) {
+                                        Ok(dest) => {
+                                                eprintln!("[settings] installed {} → {}", path.display(), dest.display());
+                                                self.icons.reload(ui.ctx(), &ASSETS, *state);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[settings] install failed: {}", e);
+                                        }
                                     }
-                                    Err(e) => {
-                                        eprintln!("[settings] install failed: {}", e);
-                                    }
+                                } else {
+                                    let ext = path
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or("?")
+                                        .to_string();
+                                    self.format_error = Some((Instant::now(), ext));
                                 }
                             }
                         }
@@ -707,19 +697,189 @@ impl App {
             }
         }
 
-        // 设置面板内也需要动画图标重绘（预览中的 GIF 要动）
+        // 设置面板内 GIF 预览也需要动画重绘
         let all_states = vec![LightState::Running, LightState::Input, LightState::Done];
         self.icons.schedule_animation_repaint(ui.ctx(), &all_states);
+    }
 
-        let _ = frame; // frame 参数当前未使用，保留以便未来扩展
+    /// 渲染单个状态卡片
+    fn render_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: LightState,
+        name: &str,
+        color: Color32,
+        has_dragged_files: bool,
+    ) {
+        // 卡片容器：白底 + 圆角 + 轻阴影
+        egui::Frame {
+            fill: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+            corner_radius: 8.0.into(),
+            inner_margin: egui::Margin {
+                left: 14, right: 14, top: 12, bottom: 12,
+            },
+            shadow: egui::Shadow {
+                offset: [0, 1],
+                blur: 3,
+                spread: 0,
+                color: Color32::from_black_alpha(8),
+            },
+            ..Default::default()
+        }
+        .show(ui, |ui| {
+            // ── 标题行：色点 + 状态名 ──
+            ui.horizontal(|ui| {
+                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 5.0, color);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(name)
+                        .size(13.5)
+                        .color(Color32::from_rgb(0x1A, 0x1A, 0x1A))
+                        .strong(),
+                );
+            });
+
+            ui.add_space(8.0);
+
+            // ── 内容行：预览 + 拖拽区 + 按钮区 ──
+            ui.horizontal(|ui| {
+                // 左侧：48×48 预览（圆角灰底）
+                let preview_size = 48.0;
+                let (preview_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(preview_size, preview_size),
+                    egui::Sense::hover(),
+                );
+                ui.painter().rect_filled(preview_rect, 6.0, Color32::from_rgb(0xF7, 0xF8, 0xFA));
+                if let Some(tex) = self.icons.get(&state) {
+                    let img_size = tex.size_vec2();
+                    let aspect = img_size.x / img_size.y.max(1.0);
+                    let (dw, dh) = if aspect > 1.0 {
+                        (preview_size, preview_size / aspect)
+                    } else {
+                        (preview_size * aspect, preview_size)
+                    };
+                    let draw_rect = egui::Rect::from_center_size(
+                        preview_rect.center(),
+                        egui::vec2(dw, dh),
+                    );
+                    ui.painter().image(
+                        tex.id(),
+                        draw_rect,
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+
+                ui.add_space(10.0);
+
+                // 中间：拖拽区
+                let is_custom = self.icons.is_custom(&state);
+                let drop_avail_w = ui.available_width();
+
+                // 如果有 reset 按钮，预留空间
+                let reset_w = if is_custom { 64.0 } else { 0.0 };
+                let drop_w = (drop_avail_w - reset_w - 4.0).max(80.0);
+
+                let (drop_rect, drop_resp) = ui.allocate_exact_size(
+                    egui::vec2(drop_w, preview_size),
+                    egui::Sense::click(),
+                );
+
+                // 检测拖拽区 hover / drag-hover
+                let pointer = ui.input(|input| input.pointer.hover_pos());
+                let is_hovered = pointer.map_or(false, |p| drop_rect.contains(p));
+                let is_being_dragged = has_dragged_files && is_hovered;
+
+                let drop_bg = if is_being_dragged {
+                    Color32::from_rgb(0xE6, 0xF4, 0xFF)
+                } else if is_hovered {
+                    Color32::from_rgb(0xF0, 0xF5, 0xFA)
+                } else {
+                    Color32::from_rgb(0xFA, 0xFB, 0xFC)
+                };
+                let drop_stroke = if is_being_dragged {
+                    egui::Stroke::new(1.5, Color32::from_rgb(0x40, 0xA9, 0xFF))
+                } else {
+                    egui::Stroke::new(1.0, Color32::from_rgb(0xD9, 0xD9, 0xD9))
+                };
+                ui.painter().rect_filled(drop_rect, 4.0, drop_bg);
+                ui.painter().rect_stroke(drop_rect, 4.0, drop_stroke, StrokeKind::Inside);
+
+                // 拖拽区文字
+                let drop_text = if is_being_dragged {
+                    "Drop here".to_string()
+                } else if is_custom {
+                    config::custom_description(&state).unwrap_or_else(|| "Custom icon".to_string())
+                } else {
+                    "Drag or click to browse".to_string()
+                };
+                let drop_color = if is_being_dragged {
+                    Color32::from_rgb(0x40, 0xA9, 0xFF)
+                } else if is_custom {
+                    Color32::from_rgb(0x52, 0xC4, 0x1A)
+                } else {
+                    Color32::from_rgb(0x99, 0x99, 0x99)
+                };
+                ui.painter().text(
+                    drop_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &drop_text,
+                    egui::FontId::proportional(11.0),
+                    drop_color,
+                );
+
+                // 记录拖拽区 rect
+                self.settings_rects.push((state, drop_rect));
+
+                // 点击拖拽区 → 打开文件对话框
+                if drop_resp.clicked() && self.file_dialog_state.is_none() {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let result = rfd::FileDialog::new()
+                            .add_filter("Images", &["png", "jpg", "jpeg", "gif"])
+                            .pick_file();
+                        let _ = tx.send(result);
+                    });
+                    self.file_dialog_state = Some((state, rx));
+                }
+
+                // 右侧：恢复默认按钮（仅自定义时）
+                if is_custom {
+                    ui.add_space(4.0);
+                    let reset_resp = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("Reset")
+                                .size(11.0)
+                                .color(Color32::from_rgb(0x72, 0x72, 0x72)),
+                        )
+                        .fill(Color32::from_rgb(0xF5, 0xF5, 0xF5))
+                        .corner_radius(4.0)
+                        .min_size(egui::vec2(56.0, 24.0)),
+                    );
+                    if reset_resp.clicked() {
+                        let _ = config::remove_icon(&state);
+                        self.icons.reload(ui.ctx(), &ASSETS, state);
+                    }
+                }
+            });
+        });
+    }
+
+    /// 校验文件是否为支持的图标格式
+    fn validate_icon_file(path: &std::path::Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "gif"))
+            .unwrap_or(false)
     }
 }
 
 fn state_color(state: LightState) -> Color32 {
     match state {
-        LightState::Running => Color32::from_rgb(255, 59, 48),
-        LightState::Input => Color32::from_rgb(255, 204, 0),
-        LightState::Done => Color32::from_rgb(52, 199, 89),
+        LightState::Running => Color32::from_rgb(0xFF, 0x4D, 0x4F),
+        LightState::Input => Color32::from_rgb(0xFA, 0xAD, 0x14),
+        LightState::Done => Color32::from_rgb(0x52, 0xC4, 0x1A),
     }
 }
 

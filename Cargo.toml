@@ -1,6 +1,6 @@
 [package]
 name = "opencode-traffic-light"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "A floating always-on-top traffic light monitor for opencode task status"
 license = "MIT"
@@ -21,6 +21,7 @@ include_dir = "0.7"
 parking_lot = "0.12"
 raw-window-handle = "0.6"
 x11rb = "0.13"
+rfd = "0.14"
 
 [profile.release]
 opt-level = "z"
