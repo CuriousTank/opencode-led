@@ -171,6 +171,29 @@ GET  /health   -> "ok"
 
 `state` 取值：`running`（红）/`input`（黄）/`done`（绿）。
 
+## 路线图
+
+opencode-traffic-light 会始终保持**极简、聚焦**的红绿灯定位 —— 不堆功能。当前进度：
+
+**已完成**
+- [x] 多会话灯泡（每个 opencode 会话一颗灯，自动出现/消失）
+- [x] 点击灯泡 → 置顶对应的终端窗口
+- [x] 自定义图标（把自己的 PNG / JPG / GIF 动画拖到对应颜色）
+- [x] 脉冲动画 + 悬停提示 + 可拖拽
+
+**进行中**
+- [ ] 系统托盘图标（聚合状态 + 显示/隐藏浮窗 + 退出）
+
+**计划中**
+- [ ] 自动空闲超时（N 分钟无状态更新则回到空闲态）
+- [ ] 声音提醒（黄/绿灯音效）
+- [ ] AppImage 分发（在 `.deb` 之外）
+- [ ] GitHub Actions 打 tag 自动发版
+- [ ] Wayland 支持（目前仅 X11）
+- [ ] macOS / Windows 支持
+
+> 想要别的功能？[提个 issue](https://github.com/CuriousTank/opencode-led/issues/new) —— 我们会克制地控制范围，但会认真听取真实需求。
+
 ## License
 
 MIT

@@ -171,6 +171,29 @@ GET  /health   -> "ok"
 
 `state` values: `running` (red) / `input` (yellow) / `done` (green).
 
+## Roadmap
+
+opencode-traffic-light stays a **minimal, focused** traffic light — no feature bloat. Progress:
+
+**Done**
+- [x] Multi-session bulbs (one per opencode session, auto appear/disappear)
+- [x] Click bulb → raise the matching terminal window
+- [x] Custom icons (drag your own PNG / JPG / animated GIF onto each colour)
+- [x] Pulsing animation + hover tooltips + draggable widget
+
+**In progress**
+- [ ] System tray icon (aggregate status + show/hide widget + quit)
+
+**Planned**
+- [ ] Auto-idle timeout (return to idle after N minutes with no updates)
+- [ ] Sound notifications (chime on yellow / green)
+- [ ] AppImage distribution (beyond `.deb`)
+- [ ] GitHub Actions auto-release on tag
+- [ ] Wayland support (currently X11 only)
+- [ ] macOS / Windows support
+
+> Want something else? [Open an issue](https://github.com/CuriousTank/opencode-led/issues/new) — we keep the scope tight but listen to real needs.
+
 ## License
 
 MIT
