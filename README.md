@@ -1,14 +1,47 @@
-# opencode-traffic-light
+# 🚦 opencode-traffic-light
+
+**A tiny floating traffic light that tells you what your AI coder is doing — without you having to look.**
+
+[![GitHub stars](https://img.shields.io/github/stars/CuriousTank/opencode-led?style=social)](https://github.com/CuriousTank/opencode-led/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/CuriousTank/opencode-led?color=blue)](https://github.com/CuriousTank/opencode-led/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/platform-Linux%20(X11)-orange)](#)
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-A floating, always-on-top traffic light widget that reflects the real-time task status of [opencode](https://opencode.ai).
+---
 
-> ⚠️ **Platform**: Currently tested only on **Ubuntu 20.04 (X11)**. Windows and macOS are **not supported** at this time.
+### 👀 Preview
 
-- 🔴 Red: opencode is executing a task (`session.status = busy`)
-- 🟡 Yellow: opencode is waiting for your input/permission (`permission.updated` pending)
-- 🟢 Green: opencode has finished the task (`session.status = idle`)
+![preview](./assets/dynamic_bulbs_2x.gif)
+
+---
+
+### Why?
+
+When you let an AI agent like [opencode](https://opencode.ai) run a long task, you keep switching back to the terminal just to check: *is it done yet? is it stuck waiting for me?*
+
+**opencode-traffic-light** is a single glowing bulb that floats on top of every window:
+
+- 🔴 **Red** — it's thinking / working (`session.status = busy`)
+- 🟡 **Yellow** — it needs you (permission pending)
+- 🟢 **Green** — done, idle, ship it 🎉
+
+Glance at your desktop. Know instantly. Get back to whatever you were doing.
+
+Each opencode session gets its own bulb — they pop in and out as sessions start and exit. Click a bulb to jump straight to that terminal.
+
+> ⚠️ **Platform**: Currently tested on **Ubuntu 20.04 (X11)**. Windows / macOS are on the roadmap.
+
+---
+
+### 💖 Found it useful?
+
+If this little light saves you some tab-switching, consider giving it a **⭐ Star** — it helps others discover it, and keeps the project alive.
+
+[![Stargazers over time](https://starchart.cc/CuriousTank/opencode-led.svg)](https://starchart.cc/CuriousTank/opencode-led)
+
+---
 
 ## Features
 

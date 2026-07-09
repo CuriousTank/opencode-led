@@ -1,14 +1,47 @@
-# opencode-traffic-light
+# 🚦 opencode-traffic-light
+
+**一个浮在桌面顶层的「红绿灯」，让你不用切回终端，也能随时知道 AI 编程助手在干嘛。**
+
+[![GitHub stars](https://img.shields.io/github/stars/CuriousTank/opencode-led?style=social)](https://github.com/CuriousTank/opencode-led/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/CuriousTank/opencode-led?color=blue)](https://github.com/CuriousTank/opencode-led/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/platform-Linux%20(X11)-orange)](#)
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-一个悬浮、置顶的「红绿灯」监控器，实时反映 [opencode](https://opencode.ai) 的任务状态。
+---
 
-> ⚠️ **平台**：目前仅在 **Ubuntu 20.04 (X11)** 上经过验证，暂不支持 Windows 和 macOS。
+### 👀 预览
 
-- 🔴 红：opencode 正在执行任务（`session.status = busy`）
-- 🟡 黄：opencode 等待你回复/介入（权限请求挂起 `permission.updated`）
-- 🟢 绿：opencode 已完成任务（`session.status = idle`）
+![preview](./assets/dynamic_bulbs_2x.gif)
+
+---
+
+### 为什么要做这个？
+
+当你让 [opencode](https://opencode.ai) 这样的 AI agent 跑一个长任务时，你总会忍不住一次次切回终端去瞄一眼：*它做完了吗？是不是卡在那等我问？*
+
+**opencode-traffic-light** 就是一颗永远浮在最顶层的发光灯泡：
+
+- 🔴 **红灯** —— 它在思考 / 干活中（`session.status = busy`）
+- 🟡 **黄灯** —— 它在等你（需要授权 / 输入）
+- 🟢 **绿灯** —— 搞定了，闲着呢 🎉
+
+扫一眼桌面就知道，不用再切窗口。
+
+每个 opencode 会话都会拥有自己的一颗灯泡，会话起起停停，灯泡也会跟着出现 / 消失。点一下灯泡，还能直接把对应的终端窗口拉到最前面。
+
+> ⚠️ **平台说明**：目前在 **Ubuntu 20.04 (X11)** 上测试通过。Windows / macOS 已列入后续计划。
+
+---
+
+### 💖 觉得好用？
+
+如果这颗小灯帮你省下了一些切窗口的功夫，欢迎点个 **⭐ Star** —— 你的支持能让更多人发现它，也是我持续维护的动力。
+
+[![Stargazers over time](https://starchart.cc/CuriousTank/opencode-led.svg)](https://starchart.cc/CuriousTank/opencode-led)
+
+---
 
 ## 功能特性
 
