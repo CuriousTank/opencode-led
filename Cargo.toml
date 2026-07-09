@@ -23,6 +23,7 @@ raw-window-handle = "0.6"
 x11rb = "0.13"
 rfd = "0.14"
 tray-icon = "0.24"
+gtk = "0.18"
 
 [profile.release]
 opt-level = "z"

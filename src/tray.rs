@@ -90,6 +90,20 @@ impl Tray {
     /// Always returns an `Arc<Tray>` (no-op stub if the platform tray is unavailable),
     /// so callers don't have to branch on `Option`.
     pub fn new(initial: LightState) -> Arc<Self> {
+        // On Linux the tray backend (appindicator + muda) sits on top of GTK,
+        // which must be initialised on the main thread *before* any GTK object
+        // (Menu / MenuItem / TrayIcon) is constructed — otherwise muda panics
+        // with "GTK has not been initialized". eframe doesn't init GTK for us.
+        #[cfg(target_os = "linux")]
+        {
+            // gtk::init() loads display/GDK properly; ignore failures so the app
+            // still runs (without a tray) on headless / weird setups.
+            if let Err(e) = gtk::init() {
+                eprintln!("[traffic-light] gtk::init failed (tray disabled): {e}");
+                return Arc::new(Self::stub(initial));
+            }
+        }
+
         // Build the context menu.
         let menu = Menu::new();
         let item_toggle = MenuItem::with_id(ID_TOGGLE, "Hide widget", true, None);
@@ -150,6 +164,19 @@ impl Tray {
             rx,
             last_state: Mutex::new(Some(initial)),
         })
+    }
+
+    /// Build a no-op stub (no real tray icon). Used when GTK init fails or the
+    /// platform doesn't support a tray — the rest of the app still works,
+    /// only without a tray indicator.
+    fn stub(initial: LightState) -> Self {
+        let (_tx, rx): (Sender<TrayCmd>, Receiver<TrayCmd>) = channel();
+        Self {
+            icon: Arc::new(Mutex::new(None)),
+            toggle_item: None,
+            rx,
+            last_state: Mutex::new(Some(initial)),
+        }
     }
 
     /// Update the tray icon + tooltip when the aggregate state changes.
