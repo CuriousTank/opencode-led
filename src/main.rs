@@ -10,10 +10,12 @@ mod icons;
 mod platform;
 mod server;
 mod store;
+mod tray;
 mod wm;
 
 use icons::Icons;
 use store::{LightState, SessionEntry, Store};
+use tray::{Tray, TrayCmd};
 
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
 
@@ -55,6 +57,9 @@ fn main() -> eframe::Result<()> {
         port
     );
     eprintln!("[traffic-light] right-click the window to quit.");
+
+    // 系统托盘图标：显示聚合状态 + 菜单（显示/隐藏、自定义图标、退出）
+    let tray = Tray::new(LightState::Done);
 
     let viewport = ViewportBuilder::default()
         .with_title("opencode traffic light")
@@ -119,6 +124,9 @@ fn main() -> eframe::Result<()> {
                 menu_pos: egui::pos2(0.0, 0.0),
                 file_dialog_state: None,
                 format_error: None,
+                tray,
+                widget_visible: true,
+                last_tray_state: None,
             }))
         }),
     )
@@ -146,6 +154,12 @@ struct App {
     file_dialog_state: Option<(LightState, std::sync::mpsc::Receiver<Option<std::path::PathBuf>>)>,
     /// 格式校验错误提示
     format_error: Option<(Instant, String)>,
+    /// 系统托盘
+    tray: Arc<Tray>,
+    /// 浮窗是否可见（托盘菜单可切换）
+    widget_visible: bool,
+    /// 上次同步给托盘的聚合状态（避免每帧刷新）
+    last_tray_state: Option<LightState>,
 }
 
 /// 拖拽中：保持鼠标相对窗口左上角的偏移恒定
@@ -173,8 +187,37 @@ impl eframe::App for App {
             }
         }
 
+        // ── 系统托盘：处理菜单命令 + 同步聚合状态 ──
+        while let Some(cmd) = self.tray.poll() {
+            match cmd {
+                TrayCmd::ToggleVisible => {
+                    self.widget_visible = !self.widget_visible;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(self.widget_visible));
+                    self.tray.set_visible_label(self.widget_visible);
+                }
+                TrayCmd::OpenSettings => {
+                    self.settings_mode = true;
+                    if !self.widget_visible {
+                        self.widget_visible = true;
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        self.tray.set_visible_label(true);
+                    }
+                }
+                TrayCmd::Quit => {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+
         let snap = self.store.snapshot();
         let count = snap.len().max(1);
+
+        // 同步聚合状态到托盘图标（仅在变化时刷新）
+        let agg = tray::aggregate_state(&snap);
+        if self.last_tray_state != Some(agg) {
+            self.last_tray_state = Some(agg);
+            self.tray.set_state(agg);
+        }
 
         // 设置模式下用浅色面板背景（不透明），正常模式下透明
         let mut visuals = egui::Visuals::dark();
