@@ -1,4 +1,5 @@
 use crate::store::LightState;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -100,4 +101,84 @@ pub fn custom_description(state: &LightState) -> Option<String> {
             .and_then(|n| n.to_str())
             .map(|s| s.to_string())
     })
+}
+
+// ── 图标尺寸偏好 ──
+
+/// 用户可选的图标尺寸档位。
+/// Small / Medium / Large 对应 0.75× / 1.0× / 1.25× 的基准尺寸（基准 = 64px）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IconSize {
+    Small,
+    Medium,
+    Large,
+}
+
+impl Default for IconSize {
+    fn default() -> Self {
+        IconSize::Medium
+    }
+}
+
+impl IconSize {
+    /// 尺寸倍数：Small=0.75, Medium=1.0, Large=1.25
+    pub fn factor(&self) -> f32 {
+        match self {
+            IconSize::Small => 0.75,
+            IconSize::Medium => 1.0,
+            IconSize::Large => 1.25,
+        }
+    }
+
+    /// 显示标签
+    pub fn label(&self) -> &'static str {
+        match self {
+            IconSize::Small => "Small",
+            IconSize::Medium => "Medium",
+            IconSize::Large => "Large",
+        }
+    }
+}
+
+/// settings.json 的结构
+#[derive(Serialize, Deserialize, Default)]
+struct Settings {
+    #[serde(default)]
+    icon_size: IconSize,
+}
+
+/// settings.json 路径：~/.config/opencode-traffic-light/settings.json
+fn settings_path() -> PathBuf {
+    config_base().join("settings.json")
+}
+
+/// 读取图标尺寸偏好，读不到/解析失败时返回默认值 (Medium)
+pub fn load_size() -> IconSize {
+    let path = settings_path();
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            serde_json::from_str::<Settings>(&content)
+                .map(|s| s.icon_size)
+                .unwrap_or_default()
+        }
+        Err(_) => IconSize::default(),
+    }
+}
+
+/// 保存图标尺寸偏好到 settings.json（失败仅打印日志，不影响运行）
+pub fn save_size(size: IconSize) {
+    let path = settings_path();
+    let settings = Settings { icon_size: size };
+    match serde_json::to_string_pretty(&settings) {
+        Ok(json) => {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Err(e) = fs::write(&path, json) {
+                eprintln!("[settings] failed to save size: {}", e);
+            }
+        }
+        Err(e) => eprintln!("[settings] failed to serialize size: {}", e),
+    }
 }

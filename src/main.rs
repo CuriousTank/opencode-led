@@ -20,14 +20,14 @@ use tray::{Tray, TrayCmd};
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
 
 const DEFAULT_PORT: u16 = 9912;
-const ICON_PX: f32 = 64.0;
+const BASE_ICON_PX: f32 = 64.0; // Medium 基准尺寸，实际尺寸 = BASE_ICON_PX × icon_size_factor
 const GAP_PX: f32 = 6.0;
 const PAD_PX: f32 = 2.0;
 const TOOLTIP_ROOM: f32 = 140.0;
 const WIN_W_MIN: f32 = 240.0; // 最小透明边距，让窗口几乎贴合灯泡，减少对其他窗口的阻挡
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(12);
-const SETTINGS_PANEL_H: f32 = 470.0; // 设置面板高度（标题+3卡片+底部提示）
+const SETTINGS_PANEL_H: f32 = 560.0; // 设置面板高度（标题+3图标卡片+尺寸卡片+底部提示）
 const SETTINGS_PANEL_W: f32 = 420.0; // 设置面板宽度
 
 fn main() -> eframe::Result<()> {
@@ -61,6 +61,11 @@ fn main() -> eframe::Result<()> {
     // 系统托盘图标：显示聚合状态 + 菜单（显示/隐藏、自定义图标、退出）
     let tray = Tray::new(LightState::Done);
 
+    // 读取图标尺寸偏好（启动时即应用，避免首帧闪烁）
+    let icon_size = config::load_size();
+    let icon_size_factor = icon_size.factor();
+    let init_icon_px = BASE_ICON_PX * icon_size_factor;
+
     let viewport = ViewportBuilder::default()
         .with_title("opencode traffic light")
         .with_decorations(false)
@@ -70,7 +75,7 @@ fn main() -> eframe::Result<()> {
         .with_position([100.0, 100.0])
         .with_inner_size(Vec2::new(
             WIN_W_MIN,
-            ICON_PX + PAD_PX * 2.0 + TOOLTIP_ROOM,
+            init_icon_px + PAD_PX * 2.0 + TOOLTIP_ROOM,
         ));
 
     let native_opts = eframe::NativeOptions {
@@ -127,6 +132,8 @@ fn main() -> eframe::Result<()> {
                 tray,
                 widget_visible: true,
                 last_tray: None,
+                icon_size_factor,
+                last_icon_factor: icon_size_factor,
             }))
         }),
     )
@@ -160,6 +167,10 @@ struct App {
     widget_visible: bool,
     /// 上次同步给托盘的 (聚合状态, 会话数)（避免每帧刷新）
     last_tray: Option<(LightState, usize)>,
+    /// 图标尺寸倍数（0.75/1.0/1.25），启动时从 config 读取，设置面板可改
+    icon_size_factor: f32,
+    /// 上一帧的图标尺寸倍数（检测变化时触发窗口 resize）
+    last_icon_factor: f32,
 }
 
 /// 拖拽中：保持鼠标相对窗口左上角的偏移恒定
@@ -237,25 +248,26 @@ impl eframe::App for App {
         ui.ctx().set_visuals(visuals);
 
         let win_rect = ui.max_rect();
+        let icon_px = BASE_ICON_PX * self.icon_size_factor; // 当前图标尺寸（动态）
 
         // ── 设置面板（上方区域） ──
         if self.settings_mode {
             let panel_rect = egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
-                egui::vec2(win_rect.width(), win_rect.height() - ICON_PX - PAD_PX * 2.0),
+                egui::vec2(win_rect.width(), win_rect.height() - icon_px - PAD_PX * 2.0),
             );
             self.render_settings(ui, frame, panel_rect);
         }
 
         // ── 灯泡行定位：窗口底部居中 ──
         let bulbs_w =
-            count as f32 * ICON_PX + count.saturating_sub(1) as f32 * GAP_PX;
+            count as f32 * icon_px + count.saturating_sub(1) as f32 * GAP_PX;
         let bulbs_rect = egui::Rect::from_min_size(
             egui::pos2(
                 win_rect.center().x - bulbs_w / 2.0,
-                win_rect.bottom() - PAD_PX - ICON_PX,
+                win_rect.bottom() - PAD_PX - icon_px,
             ),
-            egui::vec2(bulbs_w.max(ICON_PX), ICON_PX),
+            egui::vec2(bulbs_w.max(icon_px), icon_px),
         );
 
         // 在灯泡行位置创建子 UI
@@ -273,7 +285,7 @@ impl eframe::App for App {
             let tex = self.icons.get(&LightState::Done).expect("icon");
             let tint = Color32::WHITE.linear_multiply(if self.settings_mode { 0.5 } else { 0.15 });
             let (rect, resp) =
-                bulb_ui.allocate_exact_size(Vec2::splat(ICON_PX), egui::Sense::hover());
+                bulb_ui.allocate_exact_size(Vec2::splat(icon_px), egui::Sense::hover());
             bulb_ui.painter().image(
                 tex.id(),
                 rect,
@@ -283,7 +295,7 @@ impl eframe::App for App {
             bulb_responses.push(resp);
         } else {
             for e in &snap {
-                let resp = self.render_bulb(&mut bulb_ui, e);
+                let resp = self.render_bulb(&mut bulb_ui, e, icon_px);
                 bulb_responses.push(resp);
             }
         }
@@ -395,13 +407,27 @@ impl eframe::App for App {
             let menu_rect = egui::AreaState::load(ui.ctx(), egui::Id::new("context_menu"))
                 .map(|s| s.rect());
 
-            // 自动关闭：光标既不在灯泡区也不在菜单区 → 关闭
-            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
-                let in_bulbs = bulb_responses.iter().any(|r| r.rect.contains(pos));
-                let in_menu = menu_rect.map_or(false, |r| r.contains(pos));
-                if !in_bulbs && !in_menu {
-                    close_menu = true;
+            // 自动关闭：检测到点击（左键或右键）且点击位置不在菜单内 → 关闭
+            // 注意：由于 X11 input shape，正常模式下窗口外点击会穿透而收不到，
+            // 所以菜单打开期间 input shape 会把整个窗口设为可交互（见下方 X11 input shape 段），
+            // 从而用户点窗口任意位置（含透明区）都能触发这里的关闭判断。
+            let primary_clicked = ui.input(|i| i.pointer.primary_pressed());
+            let secondary_clicked = ui.input(|i| i.pointer.secondary_pressed());
+            if (primary_clicked || secondary_clicked) {
+                if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    let in_menu = menu_rect.map_or(false, |r| r.contains(pos));
+                    // 点击不在菜单区 → 关闭（右键点别处则会另开新菜单，由上方 secondary_pressed 逻辑处理）
+                    if !in_menu {
+                        close_menu = true;
+                    }
                 }
+            }
+
+            // 失焦关闭：窗口失去焦点（用户点击了桌面其他应用窗口）→ 关闭菜单
+            // 这是"点桌面任意位置关闭"的关键 —— 因为 input shape 穿透，
+            // 点击其他应用窗口时本窗口会失去焦点，egui 收到 WindowFocused(false)
+            if ui.input(|i| i.raw.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false)))) {
+                close_menu = true;
             }
 
             // ESC 关闭
@@ -430,13 +456,17 @@ impl eframe::App for App {
         } else {
             let mut input_rects: Vec<egui::Rect> =
                 bulb_responses.iter().map(|r| r.rect).collect();
-            // 菜单打开时，把菜单 rect 也加入输入区（否则按钮点击穿透）
+            // 菜单打开时：把整个窗口设为可交互（取消透明区穿透），
+            // 这样用户点击窗口任意位置（含透明边距区）都能被捕获以关闭菜单。
+            // 同时也把菜单 rect 纳入（菜单按钮本身可点击）。
             if self.menu_open {
-                if let Some(mr) = egui::AreaState::load(ui.ctx(), egui::Id::new("context_menu"))
-                    .map(|s| s.rect())
-                {
-                    input_rects.push(mr);
-                }
+                let full = ui.max_rect();
+                input_rects = vec![full];
+            } else if let Some(mr) = egui::AreaState::load(ui.ctx(), egui::Id::new("context_menu"))
+                .map(|s| s.rect())
+            {
+                // （此分支理论上不会进，菜单关闭时 menu_open 已 false，保留兼容）
+                input_rects.push(mr);
             }
             if input_rects != self.last_bulb_rects && !input_rects.is_empty() {
                 self.last_bulb_rects = input_rects.clone();
@@ -447,20 +477,23 @@ impl eframe::App for App {
             }
         }
 
-        // 自适应窗口大小（session 数量变化 / 设置模式切换 时调整）
-        let need_resize = self.last_count != snap.len() || self.last_settings_mode != self.settings_mode;
+        // 自适应窗口大小（session 数量 / 设置模式 / 图标尺寸 变化时调整）
+        let need_resize = self.last_count != snap.len()
+            || self.last_settings_mode != self.settings_mode
+            || self.last_icon_factor != self.icon_size_factor;
         if need_resize {
             self.last_count = snap.len();
             self.last_settings_mode = self.settings_mode;
+            self.last_icon_factor = self.icon_size_factor;
             let want_w = if self.settings_mode {
                 SETTINGS_PANEL_W
             } else {
                 (bulbs_w + PAD_PX * 2.0).max(WIN_W_MIN)
             };
             let want_h = if self.settings_mode {
-                SETTINGS_PANEL_H + ICON_PX + PAD_PX * 2.0
+                SETTINGS_PANEL_H + icon_px + PAD_PX * 2.0
             } else {
-                ICON_PX + PAD_PX * 2.0 + TOOLTIP_ROOM
+                icon_px + PAD_PX * 2.0 + TOOLTIP_ROOM
             };
             // with_resizable(true) + egui InnerSize command
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
@@ -490,21 +523,21 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn render_bulb(&self, ui: &mut egui::Ui, e: &SessionEntry) -> egui::Response {
+    fn render_bulb(&self, ui: &mut egui::Ui, e: &SessionEntry, icon_px: f32) -> egui::Response {
         let tex = match self.icons.get(&e.state) {
             Some(t) => t,
             None => return ui.allocate_response(Vec2::ZERO, egui::Sense::hover()),
         };
         // GIF 动画图标跳过 pulse 效果（自身已有动画）；静态图保留呼吸效果
         let (tint, size) = if self.icons.is_animated(&e.state) {
-            (Color32::WHITE, ICON_PX)
+            (Color32::WHITE, icon_px)
         } else {
-            pulse(e.state, ui.ctx().input(|i| i.time))
+            pulse(e.state, ui.ctx().input(|i| i.time), icon_px)
         };
 
-        // 固定 ICON_PX 槽位 + click/drag 交互（单击=置顶终端，拖动=移动灯泡）
+        // 固定 icon_px 槽位 + click/drag 交互（单击=置顶终端，拖动=移动灯泡）
         let (rect, resp) =
-            ui.allocate_exact_size(Vec2::splat(ICON_PX), egui::Sense::click_and_drag());
+            ui.allocate_exact_size(Vec2::splat(icon_px), egui::Sense::click_and_drag());
 
         // 脉冲图像居中绘制在固定槽位内（不因脉冲改变布局）
         let img_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(size));
@@ -702,6 +735,11 @@ impl App {
                 }
                 self.render_card(ui, *state, state_names[i], state_colors[i], has_dragged_files);
             }
+
+            ui.add_space(8.0);
+
+            // ── 图标尺寸卡片 ──
+            self.render_size_card(ui);
 
             ui.add_space(8.0);
             ui.label(
@@ -914,6 +952,90 @@ impl App {
         });
     }
 
+    /// 渲染图标尺寸选择卡片（Small / Medium / Large）
+    fn render_size_card(&mut self, ui: &mut egui::Ui) {
+        // 卡片容器：复用 render_card 的白底圆角阴影样式
+        egui::Frame {
+            fill: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+            corner_radius: 8.0.into(),
+            inner_margin: egui::Margin {
+                left: 14, right: 14, top: 12, bottom: 12,
+            },
+            shadow: egui::Shadow {
+                offset: [0, 1],
+                blur: 3,
+                spread: 0,
+                color: Color32::from_black_alpha(8),
+            },
+            ..Default::default()
+        }
+        .show(ui, |ui| {
+            // ── 标题行：色点 + 标题 ──
+            ui.horizontal(|ui| {
+                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 5.0, Color32::from_rgb(0x99, 0x99, 0x99));
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Icon Size")
+                        .size(13.5)
+                        .color(Color32::from_rgb(0x1A, 0x1A, 0x1A))
+                        .strong(),
+                );
+            });
+
+            ui.add_space(8.0);
+
+            // ── 三个分段按钮 ──
+            let current = config::IconSize::default(); // 仅用于推断当前选中的 label
+            let _ = current;
+            let current_label = match self.icon_size_factor {
+                x if (x - 0.75).abs() < 0.01 => "Small",
+                x if (x - 1.25).abs() < 0.01 => "Large",
+                _ => "Medium",
+            };
+            let current_px = (BASE_ICON_PX * self.icon_size_factor).round() as i32;
+
+            ui.horizontal(|ui| {
+                let options = [("Small", 0.75_f32), ("Medium", 1.0), ("Large", 1.25)];
+                for (label, factor) in options {
+                    let selected = (self.icon_size_factor - factor).abs() < 0.01;
+                    let (bg, fg) = if selected {
+                        (Color32::from_rgb(0x33, 0x33, 0x33), Color32::WHITE) // 选中：深底白字
+                    } else {
+                        (Color32::from_rgb(0xF0, 0xF0, 0xF3), Color32::from_rgb(0x33, 0x33, 0x33))
+                    };
+                    let btn = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(label)
+                                .size(12.5)
+                                .color(fg)
+                                .strong(),
+                        )
+                        .fill(bg)
+                        .corner_radius(6.0)
+                        .min_size(egui::vec2(96.0, 30.0)),
+                    );
+                    if btn.clicked() && !selected {
+                        self.icon_size_factor = factor;
+                        config::save_size(match factor {
+                            x if (x - 0.75).abs() < 0.01 => config::IconSize::Small,
+                            x if (x - 1.25).abs() < 0.01 => config::IconSize::Large,
+                            _ => config::IconSize::Medium,
+                        });
+                        eprintln!("[settings] icon size → {} ({}px)", label, (BASE_ICON_PX * factor).round() as i32);
+                    }
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!("Current: {} ({}px)", current_label, current_px))
+                    .size(10.5)
+                    .color(Color32::from_rgb(0x99, 0x99, 0x99)),
+            );
+        });
+    }
+
     /// 校验文件是否为支持的图标格式
     fn validate_icon_file(path: &std::path::Path) -> bool {
         path.extension()
@@ -931,16 +1053,16 @@ fn state_color(state: LightState) -> Color32 {
     }
 }
 
-fn pulse(state: LightState, t: f64) -> (Color32, f32) {
+fn pulse(state: LightState, t: f64, icon_px: f32) -> (Color32, f32) {
     match state {
         LightState::Running | LightState::Input => {
             // 1.1s 周期，亮度 0.85~1.15
             let phase = ((t % 1.1) / 1.1) as f32;
             let amp = 0.5 - 0.5 * (phase * std::f32::consts::TAU).cos(); // 0..1
             let brightness = 0.88 + 0.22 * amp;
-            let size = ICON_PX * (1.0 + 0.03 * amp);
+            let size = icon_px * (1.0 + 0.03 * amp);
             (Color32::WHITE.linear_multiply(brightness.min(1.0)), size)
         }
-        LightState::Done => (Color32::WHITE, ICON_PX),
+        LightState::Done => (Color32::WHITE, icon_px),
     }
 }
