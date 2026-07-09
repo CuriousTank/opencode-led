@@ -126,7 +126,7 @@ fn main() -> eframe::Result<()> {
                 format_error: None,
                 tray,
                 widget_visible: true,
-                last_tray_state: None,
+                last_tray: None,
             }))
         }),
     )
@@ -158,8 +158,8 @@ struct App {
     tray: Arc<Tray>,
     /// 浮窗是否可见（托盘菜单可切换）
     widget_visible: bool,
-    /// 上次同步给托盘的聚合状态（避免每帧刷新）
-    last_tray_state: Option<LightState>,
+    /// 上次同步给托盘的 (聚合状态, 会话数)（避免每帧刷新）
+    last_tray: Option<(LightState, usize)>,
 }
 
 /// 拖拽中：保持鼠标相对窗口左上角的偏移恒定
@@ -175,9 +175,14 @@ impl eframe::App for App {
         // 消费 dirty 标志（这里只是触发重绘，快照在下面直接读）
         let _ = self.dirty.lock();
 
-        // 确保每 2 秒至少重绘一次，让 sweep 能定期执行
-        // （否则无事件时 ui() 不会被调用，过期灯泡不会被清理）
-        ui.ctx().request_repaint_after(Duration::from_secs(2));
+        // 确保定期重绘：让 sweep 能定期执行 + 托盘 GTK 事件能被及时 pump
+        // （eframe 空闲时不调用 ui()，必须主动 request_repaint）
+        // 200ms：兼顾托盘菜单点击的响应感与 CPU 占用
+        ui.ctx().request_repaint_after(Duration::from_millis(200));
+
+        // 系统托盘：pump GTK 事件，让 appindicator 图标和菜单正常工作
+        // （eframe/winit 不跑 gtk::main()，必须手动 pump）
+        self.tray.pump_events();
 
         // 定期清理过期的 session（心跳超时 = opencode 进程已退出）
         if self.last_sweep.elapsed() >= SWEEP_INTERVAL {
@@ -212,11 +217,11 @@ impl eframe::App for App {
         let snap = self.store.snapshot();
         let count = snap.len().max(1);
 
-        // 同步聚合状态到托盘图标（仅在变化时刷新）
+        // 同步聚合状态 + 会话数量到托盘图标（仅在变化时刷新）
         let agg = tray::aggregate_state(&snap);
-        if self.last_tray_state != Some(agg) {
-            self.last_tray_state = Some(agg);
-            self.tray.set_state(agg);
+        if self.last_tray != Some((agg, snap.len())) {
+            self.last_tray = Some((agg, snap.len()));
+            self.tray.set_state(agg, snap.len());
         }
 
         // 设置模式下用浅色面板背景（不透明），正常模式下透明
