@@ -38,6 +38,8 @@ export default (async (input) => {
   const sessionStates = new Map<string, "running" | "done" | "input">();
   // 记录已知的 subagent session（有 parentID），不计入聚合
   const subagentSessions = new Set<string>();
+  // idle → done 的 debounce timer（避免 tool call 之间短暂 idle 导致红绿闪烁）
+  const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // 最近活跃的非 subagent session ID（用于 tooltip 显示标题）
   let primarySessionId: string | undefined;
 
@@ -149,11 +151,32 @@ export default (async (input) => {
         primarySessionId = sessionID;
         if (status.type === "busy") {
           sessionStates.set(sessionID, "running");
+          // 取消 pending idle debounce（如果有的话）
+          const t = idleTimers.get(sessionID);
+          if (t) { clearTimeout(t); idleTimers.delete(sessionID); }
         } else if (status.type === "idle") {
           if ((pendingInput.get(sessionID) ?? 0) > 0) {
             sessionStates.set(sessionID, "input");
           } else {
-            sessionStates.set(sessionID, "done");
+            // Debounce idle → done：避免 tool call 之间的短暂 idle 导致红绿闪烁
+            // 只有持续 idle 超过 3 秒才转为 done
+            const prev = sessionStates.get(sessionID);
+            if (prev === "running") {
+              const sid = sessionID;
+              const t = setTimeout(() => {
+                // 3 秒后仍然是 running（没有新的 busy 事件来覆盖）→ 才转为 done
+                if (sessionStates.get(sid) === "running") {
+                  sessionStates.set(sid, "done");
+                  pushOverall();
+                }
+                idleTimers.delete(sid);
+              }, 3000);
+              idleTimers.set(sessionID, t);
+              // 不改 sessionStates，保持 running，也不 pushOverall
+              return;
+            } else {
+              sessionStates.set(sessionID, "done");
+            }
           }
         }
         await pushOverall();
@@ -194,6 +217,8 @@ export default (async (input) => {
         sessionProjects.delete(sid);
         sessionStates.delete(sid);
         subagentSessions.delete(sid);
+        const t = idleTimers.get(sid);
+        if (t) { clearTimeout(t); idleTimers.delete(sid); }
         // 不发 /remove——进程还活着，灯泡保留，重新聚合即可
         await pushOverall();
         return;
@@ -201,6 +226,8 @@ export default (async (input) => {
     },
     dispose: async () => {
       clearInterval(refreshTimer);
+      for (const t of idleTimers.values()) clearTimeout(t);
+      idleTimers.clear();
       // 进程退出时主动移除灯泡
       try {
         await fetch(`${monitorUrl()}/remove`, {
