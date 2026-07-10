@@ -69,11 +69,13 @@ pub fn query_pointer_root(h: XHandles) -> Option<(i32, i32)> {
 }
 
 /// 直接移动窗口到根坐标 (x, y)。
+/// 使用 XMoveWindow + XSync（而非 XFlush），确保移动在下一帧前生效。
 pub fn move_window(h: XHandles, x: i32, y: i32) {
     #[cfg(target_os = "linux")]
     unsafe {
-        XMoveWindow(h.display as *mut std::ffi::c_void, h.window, x, y);
-        XFlush(h.display as *mut std::ffi::c_void);
+        let display = h.display as *mut std::ffi::c_void;
+        XMoveWindow(display, h.window, x, y);
+        XSync(display, 0);
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -228,6 +230,67 @@ struct XRectangle {
     height: u16,
 }
 
+/// XSetWindowAttributes 的前几个字段（只需要 override_redirect）
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct XSetWindowAttributesStruct {
+    background_pixmap: u64,
+    background_pixel: u64,
+    border_pixmap: u64,
+    border_pixel: u64,
+    bit_gravity: std::ffi::c_int,
+    win_gravity: std::ffi::c_int,
+    backing_store: std::ffi::c_int,
+    backing_planes: u64,
+    backing_pixel: u64,
+    save_under: std::ffi::c_int,
+    event_mask: i64,
+    do_not_propagate_mask: i64,
+    override_redirect: std::ffi::c_int,
+    colormap: u64,
+    cursor: u64,
+}
+
+/// CWOverrideRedirect mask value
+#[cfg(target_os = "linux")]
+const CW_OVERRIDE_REDIRECT: u64 = 1 << 9;
+
+/// 设置 override_redirect，让窗口完全绕过窗口管理器（Mutter 不再限制位置）。
+/// 注意：设置后 _NET_WM_STATE_ABOVE 等需要手动维护（已有 set_above）。
+pub fn set_override_redirect(h: XHandles, enable: bool) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut attrs = XSetWindowAttributesStruct {
+            background_pixmap: 0,
+            background_pixel: 0,
+            border_pixmap: 0,
+            border_pixel: 0,
+            bit_gravity: 0,
+            win_gravity: 0,
+            backing_store: 0,
+            backing_planes: 0,
+            backing_pixel: 0,
+            save_under: 0,
+            event_mask: 0,
+            do_not_propagate_mask: 0,
+            override_redirect: if enable { 1 } else { 0 },
+            colormap: 0,
+            cursor: 0,
+        };
+        XChangeWindowAttributes(
+            h.display as *mut std::ffi::c_void,
+            h.window,
+            CW_OVERRIDE_REDIRECT,
+            &attrs,
+        );
+        XFlush(h.display as *mut std::ffi::c_void);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (h, enable);
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[link(name = "Xext")]
 unsafe extern "C" {
@@ -271,6 +334,13 @@ unsafe extern "C" {
         height: std::ffi::c_int,
     ) -> std::ffi::c_int;
     fn XFlush(display: *mut std::ffi::c_void) -> std::ffi::c_int;
+    fn XSync(display: *mut std::ffi::c_void, discard: std::ffi::c_int) -> std::ffi::c_int;
+    fn XChangeWindowAttributes(
+        display: *mut std::ffi::c_void,
+        window: u64,
+        valuemask: u64,
+        attributes: *const XSetWindowAttributesStruct,
+    ) -> std::ffi::c_int;
     fn XDefaultRootWindow(display: *mut std::ffi::c_void) -> u64;
     fn XInternAtom(
         display: *mut std::ffi::c_void,

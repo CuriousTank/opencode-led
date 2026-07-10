@@ -23,7 +23,7 @@ const DEFAULT_PORT: u16 = 9912;
 const BASE_ICON_PX: f32 = 64.0; // Medium 基准尺寸，实际尺寸 = BASE_ICON_PX × icon_size_factor
 const GAP_PX: f32 = 6.0;
 const PAD_PX: f32 = 2.0;
-const TOOLTIP_ROOM: f32 = 140.0;
+const TOOLTIP_ROOM: f32 = 4.0; // tooltip 由 egui Area 渲染，不需要在窗口内预留空间
 const WIN_W_MIN: f32 = 240.0; // 最小透明边距，让窗口几乎贴合灯泡，减少对其他窗口的阻挡
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(12);
@@ -134,6 +134,7 @@ fn main() -> eframe::Result<()> {
                 last_tray: None,
                 icon_size_factor,
                 last_icon_factor: icon_size_factor,
+                override_redirect_set: false,
             }))
         }),
     )
@@ -171,12 +172,15 @@ struct App {
     icon_size_factor: f32,
     /// 上一帧的图标尺寸倍数（检测变化时触发窗口 resize）
     last_icon_factor: f32,
+    /// 是否已设置 override_redirect（一次性）
+    override_redirect_set: bool,
 }
 
 /// 拖拽中：保持鼠标相对窗口左上角的偏移恒定
 struct DragState {
     handles: platform::XHandles,
-    offset: egui::Vec2, // 鼠标根坐标 - 窗口左上角根坐标
+    /// 鼠标根坐标 - 窗口左上角根坐标（拖拽锚点）
+    offset: egui::Vec2,
 }
 
 impl eframe::App for App {
