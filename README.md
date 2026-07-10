@@ -97,7 +97,7 @@ opencode process                   Rust monitor process
 Download the latest `.deb` from [GitHub Releases](https://github.com/CuriousTank/opencode-led/releases):
 
 ```bash
-sudo dpkg -i opencode-traffic-light_0.3.0_amd64.deb
+sudo dpkg -i opencode-traffic-light_*_amd64.deb
 sudo apt-get install -f   # auto-resolve missing dependencies
 ```
 
@@ -138,7 +138,7 @@ A traffic light window will appear:
 - **Drag** any bulb to move the widget
 - **Click** a bulb to raise its terminal window to the foreground
 - **Hover** a bulb to see the session title and status
-- **Right-click** to quit
+- **Right-click** to open the menu (customize icons / quit)
 
 ## Configuration
 
@@ -152,12 +152,14 @@ The plugin reads the same `OPENCODE_TL_PORT` variable to determine which port to
 
 ## Custom Icons
 
-Edit the RGB values at the top of `tools/gen_icons.py`, then:
+Right-click any bulb → **Customize Icons** to open the settings panel. Each status (Running / Need Manual Action / Completed) has its own card where you can:
 
-```bash
-python3 tools/gen_icons.py   # regenerate assets/*.png
-cargo build --release
-```
+- **Drag & drop** a PNG, JPG, or animated GIF onto the drop zone
+- **Click** the drop zone to browse and select a file
+- **Preview** the icon live (GIFs animate in the preview)
+- **Reset** to revert to the default bulb
+
+Custom icons are stored in `~/.config/opencode-traffic-light/icons/{red,yellow,green}/`.
 
 ## Protocol
 
@@ -180,9 +182,8 @@ opencode-traffic-light stays a **minimal, focused** traffic light — no feature
 - [x] Click bulb → raise the matching terminal window
 - [x] Custom icons (drag your own PNG / JPG / animated GIF onto each colour)
 - [x] Pulsing animation + hover tooltips + draggable widget
-
-**In progress**
-- [ ] System tray icon (aggregate status + show/hide widget + quit)
+- [x] System tray icon (aggregate status + show/hide widget + quit)
+- [x] Icon size selector (Small / Medium / Large)
 
 **Planned**
 - [ ] Auto-idle timeout (return to idle after N minutes with no updates)
