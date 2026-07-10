@@ -158,21 +158,20 @@ export default (async (input) => {
           if ((pendingInput.get(sessionID) ?? 0) > 0) {
             sessionStates.set(sessionID, "input");
           } else {
-            // Debounce idle → done：避免 tool call 之间的短暂 idle 导致红绿闪烁
-            // 只有持续 idle 超过 3 秒才转为 done
+            // 曾经 running 的 session 不立即转 done，用 debounce 避免闪烁
             const prev = sessionStates.get(sessionID);
             if (prev === "running") {
               const sid = sessionID;
               const t = setTimeout(() => {
-                // 3 秒后仍然是 running（没有新的 busy 事件来覆盖）→ 才转为 done
+                idleTimers.delete(sid);
+                // 仅当仍为 running 时降级为 done
                 if (sessionStates.get(sid) === "running") {
                   sessionStates.set(sid, "done");
                   pushOverall();
                 }
-                idleTimers.delete(sid);
-              }, 3000);
+              }, 8000); // 8 秒持续 idle 才转 done（LLM 响应可能需要数秒）
               idleTimers.set(sessionID, t);
-              // 不改 sessionStates，保持 running，也不 pushOverall
+              // 保持 running 状态不变，不推送
               return;
             } else {
               sessionStates.set(sessionID, "done");
