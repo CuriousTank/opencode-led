@@ -23,7 +23,7 @@ const DEFAULT_PORT: u16 = 9912;
 const BASE_ICON_PX: f32 = 64.0; // Medium 基准尺寸，实际尺寸 = BASE_ICON_PX × icon_size_factor
 const GAP_PX: f32 = 6.0;
 const PAD_PX: f32 = 2.0;
-const TOOLTIP_ROOM: f32 = 4.0; // tooltip 由 egui Area 渲染，不需要在窗口内预留空间
+const TOOLTIP_ROOM: f32 = 100.0; // 给灯泡上方的 tooltip 预留渲染空间（XShape 只覆盖灯泡区域，不影响穿透）
 const WIN_W_MIN: f32 = 240.0; // 最小透明边距，让窗口几乎贴合灯泡，减少对其他窗口的阻挡
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(12);
@@ -581,7 +581,8 @@ impl App {
             .popup
             .align(egui::RectAlign::TOP)
             .align_alternatives(&[])
-            .gap(6.0);
+            .gap(6.0)
+            .frame(egui::Frame::NONE); // 移除外层 Popup 默认 Frame（消除黑线边框）
         tip.show(|ui| {
             egui::Frame {
                 fill: Color32::from_rgba_unmultiplied(252, 252, 254, 250),
