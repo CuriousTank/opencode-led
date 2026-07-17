@@ -7,8 +7,10 @@
 //!   x-terminal-emulator（拥有 X11 窗口）→ bash → opencode
 //! 从 opencode PID 向上爬祖先链，匹配窗口的 _NET_WM_PID。
 //!
-//! 多窗口消歧：同一终端进程可能开多个窗口（如 x-terminal-emulator），
-//! 此时用窗口标题（_NET_WM_NAME）匹配 opencode session title 来区分。
+//! 多窗口消歧（三层策略）：
+//!   1. PID 精确匹配：插件设置终端标题含 "OC:<pid>"，直接搜索 PID
+//!   2. session 标题匹配窗口标题（双向子串，容忍 "OC |" 前缀和截断）
+//!   3. opencode CWD 的 basename 匹配窗口标题
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
@@ -73,7 +75,10 @@ pub fn raise_window_for_pid(pid: i32, session_title: Option<&str>) {
     let _ = conn.flush();
 }
 
-/// 多窗口消歧。优先用 session 标题匹配窗口标题，其次用 CWD basename。
+/// 多窗口消歧。三层策略依次尝试：
+///   1. PID 精确匹配：插件设置终端标题为 "OC:<pid> | ..."，直接搜索 PID
+///   2. session 标题双向子串匹配窗口标题
+///   3. opencode CWD basename 匹配窗口标题
 fn disambiguate(
     conn: &x11rb::rust_connection::RustConnection,
     candidates: &[u32],
@@ -87,13 +92,21 @@ fn disambiguate(
         .map(|&win| (win, read_wm_name(conn, win, atom_name)))
         .collect();
 
-    // 优先：用 session 标题前缀评分匹配（处理终端窗口标题被截断的情况）
+    // 策略 1：PID 精确匹配（插件设置终端标题含 "OC:<pid>"）
+    let pid_tag = format!("OC:{}", pid);
+    for (win, name) in &named {
+        if name.as_ref().map_or(false, |n| n.contains(&pid_tag)) {
+            return Some(*win);
+        }
+    }
+
+    // 策略 2：session 标题双向子串匹配
     if let Some(title) = session_title.filter(|t| !t.is_empty()) {
         let mut best: Option<(u32, usize)> = None;
         for (win, name) in &named {
             let score = name
                 .as_ref()
-                .map(|n| title_prefix_score(n, title))
+                .map(|n| title_match_score(n, title))
                 .unwrap_or(0);
             if score >= 5 && best.map_or(true, |(_, s)| score > s) {
                 best = Some((*win, score));
@@ -104,7 +117,7 @@ fn disambiguate(
         }
     }
 
-    // 次选：opencode CWD 的 basename 匹配窗口标题
+    // 策略 3：opencode CWD 的 basename 匹配窗口标题
     if let Some(basename) = read_cwd_basename(pid) {
         let basename_lower = basename.to_lowercase();
         for (win, name) in &named {
@@ -120,19 +133,41 @@ fn disambiguate(
     None
 }
 
-/// 计算窗口标题与 session 标题的最长前缀匹配分数（字符数）。
-/// 终端可能截断窗口标题（如 "OC | 查找...(fork..." 不含完整标题），
-/// 所以从最长前缀开始尝试，返回能匹配的最大字符数。
-fn title_prefix_score(window_title: &str, session_title: &str) -> usize {
+/// 计算窗口标题与 session 标题的匹配分数（双向子串）。
+/// 终端标题格式通常为 "OC | <session_title>" 或被截断。
+/// 双向：检查 session_title 是否为 window_title 的子串（含去掉 "OC | " 前缀），
+/// 或 window_title 是否为 session_title 的子串。
+fn title_match_score(window_title: &str, session_title: &str) -> usize {
     let wt = window_title.to_lowercase();
     let st = session_title.to_lowercase();
+
+    // 去掉 "OC | " 前缀后比较
+    let wt_stripped = wt.strip_prefix("oc | ").unwrap_or(&wt);
+
+    // 完整子串匹配（session_title 是 window_title 的子串）
+    if wt.contains(&st) || wt_stripped.contains(&st) {
+        return st.chars().count();
+    }
+
+    // 截断匹配：终端可能截断长标题，从最长前缀开始尝试
     let mut boundaries: Vec<usize> = st.char_indices().map(|(i, _)| i).collect();
     boundaries.push(st.len());
     for i in (1..boundaries.len()).rev() {
-        if wt.contains(&st[..boundaries[i]]) {
+        let prefix = &st[..boundaries[i]];
+        if wt.contains(prefix) || wt_stripped.contains(prefix) {
             return i;
         }
     }
+
+    // 反向：window_title 是 session_title 的子串（窗口标题比 session 标题短）
+    let mut boundaries: Vec<usize> = wt_stripped.char_indices().map(|(i, _)| i).collect();
+    boundaries.push(wt_stripped.len());
+    for i in (1..boundaries.len()).rev() {
+        if st.contains(&wt_stripped[..boundaries[i]]) {
+            return i;
+        }
+    }
+
     0
 }
 

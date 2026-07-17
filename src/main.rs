@@ -373,7 +373,20 @@ impl eframe::App for App {
                         ..Default::default()
                     }
                     .show(ui, |ui| {
-                        ui.set_min_width(140.0);
+                        ui.set_min_width(180.0);
+                        let new_resp = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("➕  New opencode Terminal")
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(30, 30, 35)),
+                            )
+                            .fill(Color32::TRANSPARENT),
+                        );
+                        if new_resp.clicked() {
+                            std::thread::spawn(spawn_opencode_terminal);
+                            close_menu = true;
+                        }
+                        ui.separator();
                         let menu_label = if self.settings_mode {
                             "✓ Customize Icons"
                         } else {
@@ -444,44 +457,9 @@ impl eframe::App for App {
             }
         }
 
-        // ── X11 input shape ──
-        // 设置模式：整个面板可交互
-        // 菜单打开：灯泡 + 菜单区域可交互
-        // 正常：仅灯泡区域
-        if self.settings_mode {
-            let full_rect = ui.max_rect();
-            if Some(&full_rect) != self.last_bulb_rects.first() {
-                self.last_bulb_rects = vec![full_rect];
-                if let Some(h) = platform::extract_handles(frame) {
-                    let ppp = ui.ctx().pixels_per_point();
-                    platform::set_input_region(h, &[full_rect], ppp);
-                }
-            }
-        } else {
-            let mut input_rects: Vec<egui::Rect> =
-                bulb_responses.iter().map(|r| r.rect).collect();
-            // 菜单打开时：把整个窗口设为可交互（取消透明区穿透），
-            // 这样用户点击窗口任意位置（含透明边距区）都能被捕获以关闭菜单。
-            // 同时也把菜单 rect 纳入（菜单按钮本身可点击）。
-            if self.menu_open {
-                let full = ui.max_rect();
-                input_rects = vec![full];
-            } else if let Some(mr) = egui::AreaState::load(ui.ctx(), egui::Id::new("context_menu"))
-                .map(|s| s.rect())
-            {
-                // （此分支理论上不会进，菜单关闭时 menu_open 已 false，保留兼容）
-                input_rects.push(mr);
-            }
-            if input_rects != self.last_bulb_rects && !input_rects.is_empty() {
-                self.last_bulb_rects = input_rects.clone();
-                if let Some(h) = platform::extract_handles(frame) {
-                    let ppp = ui.ctx().pixels_per_point();
-                    platform::set_input_region(h, &input_rects, ppp);
-                }
-            }
-        }
-
-        // 自适应窗口大小（session 数量 / 设置模式 / 图标尺寸 变化时调整）
+        // ── 自适应窗口大小（session 数量 / 设置模式 / 图标尺寸 变化时调整）──
+        // 必须在 XShape input region 之前执行：resize 会清除 XShape，
+        // 紧接着的 set_input_region 会在同帧恢复 shape。
         let need_resize = self.last_count != snap.len()
             || self.last_settings_mode != self.settings_mode
             || self.last_icon_factor != self.icon_size_factor;
@@ -506,6 +484,43 @@ impl eframe::App for App {
             )));
         }
 
+        // ── X11 input shape ──
+        // 每帧无条件重新设置：窗口 resize / WM 重配置会清除 XShape input region，
+        // 条件跳过会导致 shape 丢失后不再恢复，透明区域拦截鼠标事件。
+        // 设置模式：整个面板可交互
+        // 菜单打开：灯泡 + 菜单区域可交互
+        // 正常：仅灯泡区域
+        if self.settings_mode {
+            let full_rect = ui.max_rect();
+            self.last_bulb_rects = vec![full_rect];
+            if let Some(h) = platform::extract_handles(frame) {
+                let ppp = ui.ctx().pixels_per_point();
+                platform::set_input_region(h, &[full_rect], ppp);
+            }
+        } else {
+            let mut input_rects: Vec<egui::Rect> =
+                bulb_responses.iter().map(|r| r.rect).collect();
+            // 菜单打开时：把整个窗口设为可交互（取消透明区穿透），
+            // 这样用户点击窗口任意位置（含透明边距区）都能被捕获以关闭菜单。
+            // 同时也把菜单 rect 纳入（菜单按钮本身可点击）。
+            if self.menu_open {
+                let full = ui.max_rect();
+                input_rects = vec![full];
+            } else if let Some(mr) = egui::AreaState::load(ui.ctx(), egui::Id::new("context_menu"))
+                .map(|s| s.rect())
+            {
+                // （此分支理论上不会进，菜单关闭时 menu_open 已 false，保留兼容）
+                input_rects.push(mr);
+            }
+            if !input_rects.is_empty() {
+                self.last_bulb_rects = input_rects.clone();
+                if let Some(h) = platform::extract_handles(frame) {
+                    let ppp = ui.ctx().pixels_per_point();
+                    platform::set_input_region(h, &input_rects, ppp);
+                }
+            }
+        }
+
         // 动画图标：如果有可见的 GIF 灯泡，安排下一帧重绘
         if !self.settings_mode {
             let visible: Vec<LightState> = if snap.is_empty() {
@@ -523,6 +538,34 @@ impl eframe::App for App {
         } else {
             [0.0, 0.0, 0.0, 0.0] // 正常模式：全透明
         }
+    }
+}
+
+/// 打开一个新终端窗口，在其中运行 opencode。
+/// 优先使用 gnome-terminal，失败则回退到 x-terminal-emulator。
+/// 工作目录为 $HOME，opencode 退出后终端保持打开（exec bash）。
+fn spawn_opencode_terminal() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let shell_cmd = "opencode; exec bash";
+
+    // 优先 gnome-terminal（与终端消歧逻辑兼容性最好）
+    let result = std::process::Command::new("gnome-terminal")
+        .arg("--")
+        .arg("bash")
+        .arg("-lc")
+        .arg(shell_cmd)
+        .current_dir(&home)
+        .spawn();
+
+    if result.is_err() {
+        // 回退到 x-terminal-emulator（terminator / xterm 等）
+        let _ = std::process::Command::new("x-terminal-emulator")
+            .arg("-e")
+            .arg("bash")
+            .arg("-lc")
+            .arg(shell_cmd)
+            .current_dir(&home)
+            .spawn();
     }
 }
 
