@@ -9,11 +9,13 @@ mod config;
 mod icons;
 mod platform;
 mod server;
+mod sessions;
 mod store;
 mod tray;
 mod wm;
 
 use icons::Icons;
+use sessions::SessionInfo;
 use store::{LightState, SessionEntry, Store};
 use tray::{Tray, TrayCmd};
 
@@ -29,6 +31,9 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(12);
 const SETTINGS_PANEL_H: f32 = 560.0; // 设置面板高度（标题+3图标卡片+尺寸卡片+底部提示）
 const SETTINGS_PANEL_W: f32 = 420.0; // 设置面板宽度
+const SESSION_PANEL_W: f32 = 380.0; // session 选择面板宽度
+const SESSION_PANEL_H: f32 = 440.0; // session 选择面板高度（标题+卡片列表）
+const SESSION_LOAD_LIMIT: usize = 10; // 最多显示多少个最近 session
 
 fn main() -> eframe::Result<()> {
     let port = std::env::var("OPENCODE_TL_PORT")
@@ -135,6 +140,11 @@ fn main() -> eframe::Result<()> {
                 icon_size_factor,
                 last_icon_factor: icon_size_factor,
                 override_redirect_set: false,
+                session_picker_mode: false,
+                last_session_picker_mode: false,
+                session_list: Vec::new(),
+                session_list_rx: None,
+                session_card_hovered: None,
             }))
         }),
     )
@@ -174,6 +184,16 @@ struct App {
     last_icon_factor: f32,
     /// 是否已设置 override_redirect（一次性）
     override_redirect_set: bool,
+    /// session 选择面板是否打开
+    session_picker_mode: bool,
+    /// 上一帧是否处于 session 选择模式（检测切换时调整窗口大小）
+    last_session_picker_mode: bool,
+    /// 异步加载的 session 列表（进入面板时 spawn 线程读取 SQLite）
+    session_list: Vec<SessionInfo>,
+    /// session 列表加载的 channel receiver
+    session_list_rx: Option<std::sync::mpsc::Receiver<Vec<SessionInfo>>>,
+    /// 当前 hover 的 session 卡片索引（用于下一帧的 fill 颜色决策）
+    session_card_hovered: Option<usize>,
 }
 
 /// 拖拽中：保持鼠标相对窗口左上角的偏移恒定
@@ -239,9 +259,9 @@ impl eframe::App for App {
             self.tray.set_state(agg, snap.len());
         }
 
-        // 设置模式下用浅色面板背景（不透明），正常模式下透明
+        // 设置/session 面板下用浅色面板背景（不透明），正常模式下透明
         let mut visuals = egui::Visuals::dark();
-        if self.settings_mode {
+        if self.settings_mode || self.session_picker_mode {
             visuals.panel_fill = Color32::from_rgb(0xF7, 0xF8, 0xFA);
             visuals.window_fill = Color32::from_rgb(0xF7, 0xF8, 0xFA);
         } else {
@@ -261,6 +281,22 @@ impl eframe::App for App {
                 egui::vec2(win_rect.width(), win_rect.height() - icon_px - PAD_PX * 2.0),
             );
             self.render_settings(ui, frame, panel_rect);
+        }
+
+        // ── Session 选择面板（上方区域） ──
+        if self.session_picker_mode {
+            // 检查异步加载结果
+            if let Some(rx) = &self.session_list_rx {
+                if let Ok(list) = rx.try_recv() {
+                    self.session_list = list;
+                    self.session_list_rx = None;
+                }
+            }
+            let panel_rect = egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(win_rect.width(), win_rect.height() - icon_px - PAD_PX * 2.0),
+            );
+            self.render_session_picker(ui, panel_rect);
         }
 
         // ── 灯泡行定位：窗口底部居中 ──
@@ -383,7 +419,28 @@ impl eframe::App for App {
                             .fill(Color32::TRANSPARENT),
                         );
                         if new_resp.clicked() {
-                            std::thread::spawn(spawn_opencode_terminal);
+                            std::thread::spawn(|| spawn_opencode_terminal(None, None));
+                            close_menu = true;
+                        }
+                        let sess_resp = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("📂  Open from Session")
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(30, 30, 35)),
+                            )
+                            .fill(Color32::TRANSPARENT),
+                        );
+                        if sess_resp.clicked() {
+                            self.settings_mode = false;
+                            self.session_picker_mode = true;
+                            self.session_list.clear();
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            self.session_list_rx = Some(rx);
+                            std::thread::spawn(move || {
+                                let sessions = sessions::load_recent_sessions(SESSION_LOAD_LIMIT)
+                                    .unwrap_or_default();
+                                let _ = tx.send(sessions);
+                            });
                             close_menu = true;
                         }
                         ui.separator();
@@ -457,23 +514,30 @@ impl eframe::App for App {
             }
         }
 
-        // ── 自适应窗口大小（session 数量 / 设置模式 / 图标尺寸 变化时调整）──
+        // ── 自适应窗口大小（session 数量 / 设置模式 / session选择模式 / 图标尺寸 变化时调整）──
         // 必须在 XShape input region 之前执行：resize 会清除 XShape，
         // 紧接着的 set_input_region 会在同帧恢复 shape。
         let need_resize = self.last_count != snap.len()
             || self.last_settings_mode != self.settings_mode
+            || self.last_session_picker_mode != self.session_picker_mode
             || self.last_icon_factor != self.icon_size_factor;
         if need_resize {
             self.last_count = snap.len();
             self.last_settings_mode = self.settings_mode;
+            self.last_session_picker_mode = self.session_picker_mode;
             self.last_icon_factor = self.icon_size_factor;
+            let panel_active = self.settings_mode || self.session_picker_mode;
             let want_w = if self.settings_mode {
                 SETTINGS_PANEL_W
+            } else if self.session_picker_mode {
+                SESSION_PANEL_W
             } else {
                 (bulbs_w + PAD_PX * 2.0).max(WIN_W_MIN)
             };
             let want_h = if self.settings_mode {
                 SETTINGS_PANEL_H + icon_px + PAD_PX * 2.0
+            } else if self.session_picker_mode {
+                SESSION_PANEL_H + icon_px + PAD_PX * 2.0
             } else {
                 icon_px + PAD_PX * 2.0 + TOOLTIP_ROOM
             };
@@ -490,7 +554,7 @@ impl eframe::App for App {
         // 设置模式：整个面板可交互
         // 菜单打开：灯泡 + 菜单区域可交互
         // 正常：仅灯泡区域
-        if self.settings_mode {
+        if self.settings_mode || self.session_picker_mode {
             let full_rect = ui.max_rect();
             self.last_bulb_rects = vec![full_rect];
             if let Some(h) = platform::extract_handles(frame) {
@@ -533,7 +597,7 @@ impl eframe::App for App {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        if self.settings_mode {
+        if self.settings_mode || self.session_picker_mode {
             [0xF7 as f32 / 255.0, 0xF8 as f32 / 255.0, 0xFA as f32 / 255.0, 1.0] // #F7F8FA
         } else {
             [0.0, 0.0, 0.0, 0.0] // 正常模式：全透明
@@ -543,18 +607,25 @@ impl eframe::App for App {
 
 /// 打开一个新终端窗口，在其中运行 opencode。
 /// 优先使用 gnome-terminal，失败则回退到 x-terminal-emulator。
-/// 工作目录为 $HOME，opencode 退出后终端保持打开（exec bash）。
-fn spawn_opencode_terminal() {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let shell_cmd = "opencode; exec bash";
+/// `directory`：指定工作目录（cd 到该目录后运行 opencode）。None 则用 $HOME。
+/// `session_id`：如果提供，用 `opencode -s <id>` 恢复指定会话；否则运行全新 opencode。
+/// opencode 退出后终端保持打开（exec bash）。
+fn spawn_opencode_terminal(directory: Option<&str>, session_id: Option<&str>) {
+    let dir = directory
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
+    let shell_cmd = match session_id {
+        Some(sid) => format!("opencode -s '{}'; exec bash", sid.replace('\'', "'\\''")),
+        None => "opencode; exec bash".to_string(),
+    };
 
     // 优先 gnome-terminal（与终端消歧逻辑兼容性最好）
     let result = std::process::Command::new("gnome-terminal")
         .arg("--")
         .arg("bash")
         .arg("-lc")
-        .arg(shell_cmd)
-        .current_dir(&home)
+        .arg(format!("cd '{}' && {}", dir.replace('\'', "'\\''"), shell_cmd))
+        .current_dir(&dir)
         .spawn();
 
     if result.is_err() {
@@ -563,8 +634,8 @@ fn spawn_opencode_terminal() {
             .arg("-e")
             .arg("bash")
             .arg("-lc")
-            .arg(shell_cmd)
-            .current_dir(&home)
+            .arg(format!("cd '{}' && {}", dir.replace('\'', "'\\''"), shell_cmd))
+            .current_dir(&dir)
             .spawn();
     }
 }
@@ -834,6 +905,231 @@ impl App {
         // 设置面板内 GIF 预览也需要动画重绘
         let all_states = vec![LightState::Running, LightState::Input, LightState::Done];
         self.icons.schedule_animation_repaint(ui.ctx(), &all_states);
+    }
+
+    /// 渲染 session 选择面板
+    fn render_session_picker(&mut self, ui: &mut egui::Ui, panel_rect: egui::Rect) {
+        // ESC 关闭
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.session_picker_mode = false;
+            return;
+        }
+
+        // 在限定的 panel_rect 内创建子 UI（避免 Frame 延伸到底部灯泡行区域）
+        let mut panel_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(panel_rect)
+                .id_salt("session_picker_panel")
+                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+        );
+
+        // 主面板容器（与设置面板同一设计语言）
+        egui::Frame {
+            fill: Color32::from_rgb(0xF7, 0xF8, 0xFA),
+            inner_margin: egui::Margin {
+                left: 16, right: 16, top: 14, bottom: 8,
+            },
+            ..Default::default()
+        }
+        .show(&mut panel_ui, |ui| {
+            // ── 标题栏 ──
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("📂  Recent Sessions")
+                        .size(15.0)
+                        .color(Color32::from_rgb(0x1A, 0x1A, 0x1A))
+                        .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let done_btn = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("Done")
+                                .size(12.0)
+                                .color(Color32::from_rgb(0x1A, 0x1A, 0x1A)),
+                        )
+                        .fill(Color32::from_rgb(0xE8, 0xE8, 0xEC))
+                        .corner_radius(4.0)
+                        .min_size(egui::vec2(56.0, 24.0)),
+                    );
+                    if done_btn.clicked() {
+                        self.session_picker_mode = false;
+                    }
+                });
+            });
+
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new("Click a session to resume it in a new terminal")
+                    .size(11.0)
+                    .color(Color32::from_rgb(0x99, 0x99, 0x99)),
+            );
+
+            ui.add_space(10.0);
+
+            // ── session 列表（可滚动） ──
+            let avail_height = ui.available_height() - 20.0; // 留底部空间
+            egui::ScrollArea::vertical()
+                .max_height(avail_height)
+                .show(ui, |ui| {
+                    if self.session_list_rx.is_some() {
+                        // 加载中
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(40.0);
+                            ui.label(
+                                egui::RichText::new("Loading sessions...")
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(0x99, 0x99, 0x99)),
+                            );
+                        });
+                        return;
+                    }
+
+                    if self.session_list.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(40.0);
+                            ui.label(
+                                egui::RichText::new("No sessions found")
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(0x99, 0x99, 0x99)),
+                            );
+                        });
+                        return;
+                    }
+
+                    // 获取当前活跃 session 的目录集合（用于标记活跃状态）
+                    let snap = self.store.snapshot();
+                    let active_dirs: std::collections::HashSet<String> = snap
+                        .iter()
+                        .filter_map(|e| e.project.clone())
+                        .collect();
+
+                    let mut clicked_session: Option<(String, String)> = None; // (dir, session_id)
+
+                    for (i, sess) in self.session_list.iter().enumerate() {
+                        if i > 0 {
+                            ui.add_space(6.0);
+                        }
+
+                        let is_active = active_dirs.contains(&sess.directory);
+                        let basename = sessions::dir_basename(&sess.directory);
+                        let short_path = sessions::shorten_path(&sess.directory);
+                        let rel_time = sessions::relative_time(sess.time_updated);
+
+                        // 状态圆点颜色
+                        let dot_color = if is_active {
+                            // 查找该目录对应的 session 状态颜色
+                            snap.iter()
+                                .find(|e| e.project.as_deref() == Some(&sess.directory))
+                                .map(|e| state_color(e.state))
+                                .unwrap_or(Color32::from_rgb(0x52, 0xC4, 0x1A))
+                        } else {
+                            Color32::from_rgb(0xCC, 0xCC, 0xCC) // 灰色 = 历史 session
+                        };
+
+                        // 卡片：根据上一帧 hover 状态决定 fill（避免 painter 覆盖内容）
+                        let is_hovered = self.session_card_hovered == Some(i);
+                        let card_fill = if is_hovered {
+                            Color32::from_rgb(0xF0, 0xF5, 0xFF)
+                        } else {
+                            Color32::from_rgb(0xFF, 0xFF, 0xFF)
+                        };
+
+                        let card_resp = egui::Frame {
+                            fill: card_fill,
+                            corner_radius: 8.0.into(),
+                            inner_margin: egui::Margin {
+                                left: 14, right: 14, top: 10, bottom: 10,
+                            },
+                            stroke: egui::Stroke::NONE,
+                            shadow: egui::Shadow {
+                                offset: [0, 1],
+                                blur: 3,
+                                spread: 0,
+                                color: Color32::from_black_alpha(8),
+                            },
+                            ..Default::default()
+                        }
+                        .show(ui, |ui| {
+                            // 第1行：圆点 + 文件夹名（左）  +  时间（右）
+                            ui.horizontal(|ui| {
+                                let (dot_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(12.0, 16.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(dot_rect.center(), 4.0, dot_color);
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(&basename)
+                                        .size(14.0)
+                                        .color(Color32::from_rgb(0x1A, 0x1A, 0x1A))
+                                        .strong(),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(&rel_time)
+                                                .size(11.0)
+                                                .color(Color32::from_rgb(0xAA, 0xAA, 0xAA)),
+                                        );
+                                    },
+                                );
+                            });
+
+                            // 第2行：session 标题
+                            if !sess.title.is_empty() {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(&sess.title)
+                                        .size(12.0)
+                                        .color(Color32::from_rgb(0x66, 0x66, 0x66)),
+                                );
+                            }
+
+                            // 第3行：完整路径
+                            ui.add_space(1.0);
+                            ui.label(
+                                egui::RichText::new(&short_path)
+                                    .size(10.5)
+                                    .color(Color32::from_rgb(0xAA, 0xAA, 0xAA)),
+                            );
+                        })
+                        .response;
+
+                        // 添加交互层（Frame::show 默认不带 click sensing）
+                        let interact_resp = ui.interact(
+                            card_resp.rect,
+                            ui.id().with("session_card").with(i),
+                            egui::Sense::click(),
+                        );
+
+                        // 更新 hover 状态供下一帧使用
+                        if interact_resp.hovered() {
+                            self.session_card_hovered = Some(i);
+                        }
+
+                        if interact_resp.clicked() {
+                            clicked_session = Some((sess.directory.clone(), sess.id.clone()));
+                        }
+                    }
+
+                    // 如果没有卡片被 hover，清除状态
+                    if self.session_card_hovered.is_some()
+                        && !self.session_list.is_empty()
+                        && self.session_card_hovered.unwrap() >= self.session_list.len()
+                    {
+                        self.session_card_hovered = None;
+                    }
+
+                    // 在循环外处理点击（避免借用问题）
+                    if let Some((dir, sid)) = clicked_session {
+                        std::thread::spawn(move || {
+                            spawn_opencode_terminal(Some(&dir), Some(&sid));
+                        });
+                        self.session_picker_mode = false;
+                    }
+                });
+        });
     }
 
     /// 渲染单个状态卡片
