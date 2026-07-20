@@ -52,6 +52,7 @@ If this little light saves you some tab-switching, consider giving it a **⭐ St
 - **🪟 Transparent & always-on-top** — Borderless, click-through (XShape input region), stays above all windows without blocking interaction.
 - **✋ Draggable** — Drag any bulb to reposition the widget.
 - **🎨 Custom icons** — Right-click any bulb → "Customize Icons" to open the settings panel. Drag your own images (PNG / JPG / **animated GIF**) onto each colour to replace the default bulbs. Want a beating heart for red, a bouncing dot for yellow, or a confetti animation for green? Just drop the file in.
+- **📂 Open from Session** — Right-click any bulb → "Open from Session" to browse your recent opencode sessions (read from the local SQLite DB). Click any session to instantly resume it in a new terminal — `cd` to the project directory and run `opencode -s <session_id>` to restore the full conversation history.
 
 ## Demo
 
@@ -184,6 +185,7 @@ opencode-traffic-light stays a **minimal, focused** traffic light — no feature
 - [x] Pulsing animation + hover tooltips + draggable widget
 - [x] System tray icon (aggregate status + show/hide widget + quit)
 - [x] Icon size selector (Small / Medium / Large)
+- [x] Open from Session (browse recent sessions, click to resume in a new terminal)
 
 **Planned**
 - [ ] Auto-idle timeout (return to idle after N minutes with no updates)
